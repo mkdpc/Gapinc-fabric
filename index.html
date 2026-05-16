@@ -18,11 +18,11 @@
   --rd:#b83232;--rd-soft:rgba(184,50,50,.1);
   --b-gap:#002868;--b-ath:#7B5FA8;--b-on:#3B9BD8;--b-ba:#E0A800;--b-ba-tx:#3a2c00;
 }
-body{font-family:'Segoe UI','Microsoft JhengHei',sans-serif;background:#dfe5ef;color:var(--tx);min-height:100vh;font-size:14px}
+body{font-family:'Segoe UI','Microsoft JhengHei',sans-serif;background:#dfe5ef;color:var(--tx);min-height:100vh;font-size:16px}
 button{font-family:inherit;cursor:pointer}
 a{color:var(--ac)}
 
-.app{max-width:1240px;margin:24px auto;background:var(--cd);border-radius:11px;overflow:hidden;border:1px solid #c7cfdb;box-shadow:0 8px 32px rgba(14,24,40,.12)}
+.app{max-width:1480px;margin:24px auto;background:var(--cd);border-radius:11px;overflow:hidden;border:1px solid #c7cfdb;box-shadow:0 8px 32px rgba(14,24,40,.12)}
 .appbar{background:var(--cd);padding:12px 24px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
 .appbar .brand{display:flex;align-items:center;gap:14px}
 .appbar .logo{font-size:1.15em;font-weight:700;color:var(--tx)}
@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.10',
+  VERSION: '5.0.12',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1030,7 +1030,11 @@ function renderAppShell(){
   const fabricCount = Store.list('fabric:').length;
   const styleCount = Store.list('style:').length;
   const stats = `<span class="stats">📚 ${fabricCount} 塊布 · ${styleCount} 款已採用</span>`;
-  const tabs = isAdmin() ? ['search','excel','history','pending','settings'] : ['search','excel','history'];
+  const tabs = isAdmin()
+    ? ['excel','search','pending','history','settings']
+    : ['search','history'];
+  // 如果 currentTab 不在允許清單裡（例如成員從前一階段帶著 'excel' 登入），導回第一個合法 tab
+  if(!tabs.includes(State.currentTab)) State.currentTab = tabs[0];
   const tabLabels = { search:'單筆查詢', excel:'Excel查詢', history:'查詢紀錄', pending:'待補請求', settings:'Settings' };
   const pendingCnt = (Store.get('pendingRequests')||[]).filter(r => r.brand === currentBrandKey() && !r.resolved).length;
   return `
@@ -1110,7 +1114,7 @@ function attachIdentity(){
     el.onclick = () => {
       const k = el.dataset.brand;
       State.user = { role:'admin', brand:k, name:BRANDS[k].tech };
-      State.currentTab = 'search';
+      State.currentTab = 'excel';  // admin 預設進 Excel 查詢
       render();
       toast(`歡迎 ${BRANDS[k].tech}！你是 ${BRANDS[k].name} 負責人`,'gn');
     };
@@ -2247,18 +2251,23 @@ function renderSetData(){
   </div>
 
   <div class="set-section">
-    <h3><span class="lbl">📂 從資料夾掃描 .fab 檔</span><span class="meta">新增公檔還沒收的 RD（placeholder）</span></h3>
+    <h3><span class="lbl">📂 從資料夾掃描公檔新布</span><span class="meta">補公檔 Excel 還沒收的 RD</span></h3>
     <div class="template-help">
-      <b>用途：</b>客人 Excel 出現「公檔沒有的 RD」時，從網路資料夾 (<code>\\\\192.168.1.220\\3ddb\\Fabric Library\\...</code>) 把缺漏的 RD 撈進來。<br>
+      <b>用途：</b>客人 Excel 出現「公檔還沒收的 RD」時，從網路資料夾把缺漏的 RD 撈進來當 placeholder。<br>
       <b>使用方法：</b>
       <ol style="margin:6px 0 6px 22px;padding:0;line-height:1.7">
-        <li>Windows 檔案總管 → 此電腦 → <b>連線網路磁碟機</b> → 把 <code>\\\\192.168.1.220\\3ddb</code> 對應成代號 (例如 <code>Z:</code>)</li>
-        <li>下方點「選擇資料夾」→ 選你要掃的層級 (例如 <code>Z:\\Fabric Library\\ONY\\Knit</code>)</li>
-        <li>系統遞迴掃 .fab 檔、從檔名抓 RD 號、比對現有公檔</li>
-        <li>顯示「公檔還沒有的 N 個 RD」→ 確認後批次新增為 placeholder（只有 RD/type/brand，其他空白）</li>
-        <li>之後在搜尋頁找到該 RD → 編輯備註可補上 composition/weight 等資料</li>
+        <li>Windows 檔案總管 → 此電腦 → <b>連線網路磁碟機</b> → 把 <code>\\\\192.168.1.220\\3ddb</code> 對應成代號（例 <code>Z:</code>）</li>
+        <li>下方「選擇資料夾」— 兩種結構都支援：
+          <ul style="margin:3px 0 3px 18px">
+            <li><b>Athleta / BR</b>：選 Knit 或 Woven 資料夾<br><code style="font-size:.92em">Z:\\Fabric Library\\ATHLETA\\CLO\\Knit</code><br>內含 <code>RD179941.fab</code> 之類，RD 在<b>檔名</b></li>
+            <li><b>GAP / ONY</b>：選整個品牌資料夾<br><code style="font-size:.92em">Z:\\Fabric Library\\GAP</code> 或 <code>Z:\\Fabric Library\\ONY</code><br>每個 RD 是一個資料夾，RD 在<b>資料夾名</b>（檔案是 .zab 之類）</li>
+          </ul>
+        </li>
+        <li>系統遞迴掃所有檔案，從<b>檔名或資料夾名</b>抓 RD 號（5 位以上連續數字）</li>
+        <li>對照現有公檔，列出新 RD → 確認後批次新增 placeholder</li>
+        <li>之後在搜尋找到該 RD → 編輯備註可補資料；或客人 BOM Excel 帶到此 RD 時會自動補</li>
       </ol>
-      <b>⚠ 限制：</b>不解析 .fab 內容（CLO 格式不公開），只用<b>檔名抓 RD 號</b>（regex: 5 位以上連續數字）。
+      <b>⚠ 不解析檔案內容</b>（.fab/.zab 都不行），只看路徑裡的 RD 號。
     </div>
     <div style="display:grid;grid-template-columns:200px 1fr 200px;gap:10px;margin-bottom:10px">
       <div>
@@ -2533,6 +2542,30 @@ async function handleLibraryUpload(file, fabricType){
 }
 
 // 簡易確認對話 — 不用 alert，因為要顯示預覽表格
+// 從路徑抓 RD 號。先試檔名（去副檔名），抓不到再試 ancestor 資料夾名（由近到遠）。
+// 數字必須從 segment 開頭（避免抓到日期/序號之類）
+//   'Knit/RD179941.fab'      → 'RD#179941'  (from filename)
+//   '179941_Single Jersey.fab' → 'RD#179941'  (from filename, leading number)
+//   'GAP/1058674/swatch.zab' → 'RD#1058674' (from folder)
+//   'GAP/2024_catalog.pdf'   → null  (filename starts with 2024 = 4 digits, 不夠長)
+//   'GAP/README.md'          → null
+function extractRdFromPath(path){
+  if(!path) return null;
+  const parts = path.split('/').filter(Boolean);
+  if(parts.length === 0) return null;
+  // 1. 檔名（去副檔名後）開頭抓
+  const filename = parts[parts.length - 1];
+  const nameNoExt = filename.replace(/\.[^.]+$/, '');
+  const fm = nameNoExt.match(/^(?:RD[#_-]?)?(\d{5,})/i);
+  if(fm) return 'RD#' + fm[1];
+  // 2. 從最靠近檔案的 ancestor 資料夾往上找（含 root）
+  for(let i = parts.length - 2; i >= 0; i--){
+    const m = parts[i].match(/^(?:RD[#_-]?)?(\d{5,})/i);
+    if(m) return 'RD#' + m[1];
+  }
+  return null;
+}
+
 function detectFabricTypeFromPath(path){
   const p = path.toLowerCase();
   if(/\bknit\b/.test(p)) return 'Knit';
@@ -2562,16 +2595,17 @@ async function handleFolderScan(fileList, typeOverride, uncPrefix){
   let uncRoot = uncPrefix || '';
   if(uncRoot && !uncRoot.endsWith('\\') && !uncRoot.endsWith('/')) uncRoot += '\\';
 
-  // 過濾 .fab 檔，抓 RD 號
+  // 過濾並抓 RD 號 — 支援兩種結構：
+  //   (A) 檔名是 RD：例 ATHLETA/CLO/Knit/RD179941.fab
+  //   (B) 資料夾名是 RD：例 GAP/1058674/swatch.zab
+  // 從檔名抓不到 → 改抓「最靠近檔案的資料夾名」
   const fabFiles = [];
   const skipped = [];
   for(let i = 0; i < fileList.length; i++){
     const f = fileList[i];
-    if(!f.name.toLowerCase().endsWith('.fab')) continue;
-    const rdMatch = f.name.match(/(\d{5,})/);
-    if(!rdMatch){ skipped.push({ name:f.name, reason:'檔名無 5 位以上數字' }); continue; }
-    const rd = 'RD#' + rdMatch[1];
     const relativePath = f.webkitRelativePath || f.name;
+    const rd = extractRdFromPath(relativePath);
+    if(!rd){ skipped.push({ name:relativePath, reason:'路徑無 RD 號' }); continue; }
     // 父資料夾路徑（移除檔名）；用 / 切再轉 \
     const parentRel = relativePath.split('/').slice(0,-1).join('\\');
     const folderUnc = uncRoot + parentRel;
@@ -2582,7 +2616,7 @@ async function handleFolderScan(fileList, typeOverride, uncPrefix){
       folderUnc,
       name: f.name,
       detectedType,
-      lastModified: f.lastModified  // 從檔案抓出修改時間
+      lastModified: f.lastModified
     });
   }
 
