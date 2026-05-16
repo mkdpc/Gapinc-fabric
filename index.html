@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.12',
+  VERSION: '5.0.14',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -612,6 +612,14 @@ function parseMainCell(text){
       parseFields(current, line);
       continue;
     }
+    // 開頭裸數字 + 逗號（例 BAC 格式：'1068277, Fleece, 80% Cotton...'）
+    const bareNumAtStart = line.match(/^\s*(\d{5,})\s*[,，]/);
+    if(bareNumAtStart){
+      if(current) fabrics.push(finalizeFabric(current));
+      current = { role:null, labelFormat:false, raw:line, rd:'RD#'+bareNumAtStart[1] };
+      parseFields(current, line);
+      continue;
+    }
     const rdAnywhere = line.match(/(?:^|[\s,])RD#?(\d{3,})\b/i);
     if(rdAnywhere && !current){
       current = { role:null, labelFormat:false, raw:line };
@@ -635,13 +643,28 @@ function parseFields(f, text){
     const m = text.match(/RD#?(\d{3,})/i);
     if(m) f.rd = 'RD#' + m[1];
   }
+  // 文字開頭裸數字 + 逗號（例 "主料: 1068277, Fleece, ..."）
+  if(!f.rd){
+    const m = text.match(/^\s*(\d{5,})\s*[,，]/);
+    if(m) f.rd = 'RD#' + m[1];
+  }
   if(!f.composition){
     const m = text.match(/\d+%\s*[\w\(\)\u4e00-\u9fff]+(?:\s*[,，]?\s*\d+%\s*[\w\(\)\u4e00-\u9fff]+)*/);
     if(m) f.composition = m[0].trim();
   }
   if(!f.weight){
-    const m = text.match(/(\d+(?:\.\d+)?)\s*(?:g\s*\/\s*m[²2]|gsm|GSM)/i);
-    if(m) f.weight = m[1] + ' g/m²';
+    // 抓 g/m² 系列：280 g/m2、280gsm、280gm、280 g m2、280 g/m² 等
+    const wm = text.match(/(\d+(?:\.\d+)?)\s*(?:g\s*\/\s*m\s*[²2]|gsm|gm|g\s*m\s*[²2])(?=$|[\s,，.;)\]、/])/i);
+    if(wm){ f.weight = wm[1] + ' g/m²'; }
+    else {
+      // 抓 oz 系列：4.5 oz/yd、4.5oz/yd2、4.5 osy → 換算成 gsm (×33.906)
+      const om = text.match(/(\d+(?:\.\d+)?)\s*(?:oz\s*\/?\s*s?q?\s*y(?:d|ard)?\s*[²2]?|osy)(?=$|[\s,，.;)\]、/])/i);
+      if(om){
+        const gsm = Math.round(parseFloat(om[1]) * 33.906);
+        f.weight = gsm + ' g/m²';
+        f.weightSrcOz = om[1] + ' oz/yd²';  // 保留原 oz 值供 reference
+      }
+    }
   }
   if(!f.width){
     const m = text.match(/(\d{2,3}(?:\s*[\/x]\s*\d{2,3})?)\s*"\s*(CW|cw)?/);
@@ -671,7 +694,7 @@ function parseFields(f, text){
 }
 
 function finalizeFabric(f){
-  if(!f.rd && !f.rdMissing) f.rdMissing = true;
+  f.rdMissing = !f.rd;  // 一律以 f.rd 是否存在來決定，避免之前 pre-set 沒清掉
   return f;
 }
 
