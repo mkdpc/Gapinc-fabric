@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.14',
+  VERSION: '5.0.21',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1047,30 +1047,42 @@ function renderAppShell(){
     ? (CloudSync.status==='ok' ? '☁ 已同步' : CloudSync.status==='err' ? '⚠ 未同步' : '☁ 同步中')
     : '☁ 本機';
   const syncCls = CloudSync.enabled() ? CloudSync.status : 'local';
-  const chip = u.role === 'admin'
-    ? `<div class="userchip adm" data-act="logout">⭐ <b>${BRANDS[u.brand].name} 負責人</b> · ${u.name} <span class="synced ${syncCls}">${syncLabel}</span></div>`
-    : `<div class="userchip" data-act="logout">👤 成員 <span class="synced ${syncCls}">${syncLabel}</span></div>`;
+  let chip;
+  if(u.role === 'admin'){
+    chip = `<div class="userchip adm" data-act="logout">⭐ <b>${BRANDS[u.brand].name} 負責人</b> · ${u.name} <span class="synced ${syncCls}">${syncLabel}</span></div>`;
+  } else {
+    // 成員 chip：分兩塊 — 左邊「在幫哪組」可點切換、右邊登出按鈕
+    const helping = u.brand && BRANDS[u.brand]
+      ? `在幫 <b style="color:${BRANDS[u.brand].color}">${BRANDS[u.brand].name}</b> · ${u.name}`
+      : `<span style="color:var(--or)">點此選 brand</span>`;
+    chip = `<div class="userchip" data-act="pick-brand" title="點此切換你正在幫的 brand">👤 成員 · ${helping} ▾</div>
+            <div class="userchip" data-act="logout" title="登出">↩ 登出 <span class="synced ${syncCls}">${syncLabel}</span></div>`;
+  }
   const fabricCount = Store.list('fabric:').length;
   const styleCount = Store.list('style:').length;
   const stats = `<span class="stats">📚 ${fabricCount} 塊布 · ${styleCount} 款已採用</span>`;
   const tabs = isAdmin()
     ? ['excel','search','pending','history','settings']
-    : ['search','history'];
+    : ['search'];  // 成員只看搜尋頁，沒 tab 切換
   // 如果 currentTab 不在允許清單裡（例如成員從前一階段帶著 'excel' 登入），導回第一個合法 tab
   if(!tabs.includes(State.currentTab)) State.currentTab = tabs[0];
   const tabLabels = { search:'單筆查詢', excel:'Excel查詢', history:'查詢紀錄', pending:'待補請求', settings:'Settings' };
   const pendingCnt = (Store.get('pendingRequests')||[]).filter(r => r.brand === currentBrandKey() && !r.resolved).length;
+  // 只有 1 個 tab 時不顯示 tab bar（成員）
+  const tabBar = tabs.length > 1
+    ? `<div class="mtabs">
+        ${tabs.map(t => {
+          const cnt = (t==='pending' && pendingCnt>0) ? `<span class="cnt">${pendingCnt}</span>` : '';
+          return `<button class="mtab ${State.currentTab===t?'a':''}" data-tab="${t}">${tabLabels[t]}${cnt}</button>`;
+        }).join('')}
+       </div>`
+    : '';
   return `
     <div class="appbar">
       <div class="brand"><div class="logo">GIS FDT <em>v${CONFIG.VERSION}</em></div></div>
       <div class="right">${stats}${chip}</div>
     </div>
-    <div class="mtabs">
-      ${tabs.map(t => {
-        const cnt = (t==='pending' && pendingCnt>0) ? `<span class="cnt">${pendingCnt}</span>` : '';
-        return `<button class="mtab ${State.currentTab===t?'a':''}" data-tab="${t}">${tabLabels[t]}${cnt}</button>`;
-      }).join('')}
-    </div>
+    ${tabBar}
     <div class="body" id="tab-content"></div>
   `;
 }
@@ -1081,6 +1093,63 @@ function attachShell(){
   });
   document.querySelectorAll('[data-act="logout"]').forEach(b => {
     b.onclick = () => { if(confirm('切換身份？')){ State.user = null; State.search.result = null; render(); } };
+  });
+  document.querySelectorAll('[data-act="pick-brand"]').forEach(b => {
+    b.onclick = () => openMemberBrandPicker();
+  });
+}
+
+function openMemberBrandPicker(){
+  const u = State.user || {};
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-bg" id="mbp-bg">
+      <div class="modal" style="max-width:520px">
+        <h3>選你正在幫的 brand</h3>
+        <div class="body-x">
+          <div style="font-size:.88em;color:var(--t2);margin-bottom:12px">
+            選完後上方 chip 會顯示 brand，<b>複製 comment 會用該 brand 的負責人名字</b>。隨時可改。
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">
+            ${BRAND_KEYS.map(k => {
+              const b = BRANDS[k];
+              const isCurrent = u.brand === k;
+              return `<button data-mbp-brand="${k}" style="text-align:left;padding:14px 16px;border-radius:9px;cursor:pointer;background:${isCurrent?'var(--ac-soft)':'#fff'};border:1px solid ${isCurrent?'var(--ac)':'var(--bd)'};border-top:4px solid ${b.color}">
+                <div style="font-weight:700;color:${b.color};font-size:1.05em">${b.name}${isCurrent?' ✓':''}</div>
+                <div style="font-size:.85em;color:var(--t2);margin-top:3px">${b.tech}</div>
+              </button>`;
+            }).join('')}
+          </div>
+          ${u.brand ? `<button class="btn s sm" data-mbp-clear="1" style="margin-top:12px;width:100%">清除選擇（不幫任何 brand）</button>` : ''}
+        </div>
+        <div class="modal-acts">
+          <button class="btn s" id="mbp-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+  `;
+  const close = () => { root.innerHTML = ''; };
+  document.getElementById('mbp-cancel').onclick = close;
+  document.getElementById('mbp-bg').onclick = e => { if(e.target.id === 'mbp-bg') close(); };
+  document.querySelectorAll('[data-mbp-brand]').forEach(btn => {
+    btn.onclick = () => {
+      const k = btn.dataset.mbpBrand;
+      State.user = Object.assign({}, State.user, { brand:k, name: BRANDS[k].tech });
+      toast(`現在在幫 ${BRANDS[k].name} (${BRANDS[k].tech})`,'gn');
+      close();
+      render();
+    };
+  });
+  document.querySelectorAll('[data-mbp-clear]').forEach(btn => {
+    btn.onclick = () => {
+      const u = Object.assign({}, State.user);
+      delete u.brand;
+      delete u.name;
+      State.user = u;
+      toast('已清除 brand 選擇','or');
+      close();
+      render();
+    };
   });
 }
 
@@ -1157,6 +1226,7 @@ function attachIdentity(){
 // ============================================================
 function renderSearchTab(){
   const adm = isAdmin();
+  if(!adm) return renderSearchTabMember();
   const brandChips = ['all', ...BRAND_KEYS].map(k => {
     const isOwn = adm && k === currentBrandKey();
     const cls = State.search.brand === k ? 'a' : (isOwn ? 'own' : '');
@@ -1200,10 +1270,87 @@ function renderSearchTab(){
     if(r.kind === 'style')           resultUI = renderStyleResult(r.style, r.key);
     else if(r.kind === 'rd')         resultUI = renderRdResult(r.rd, r.fabric);
     else if(r.kind === 'multi')      resultUI = renderMultiFabricResult(r.query, r.matches, r.totalCount);
+    else if(r.kind === 'recommend')  resultUI = renderRecommendResult(r.query, r.parsedFab, r.candidates);
     else if(r.kind === 'multiStyle') resultUI = renderMultiStyleResult(r.query, r.matches);
     else if(r.kind === 'notfound')   resultUI = renderNotFound(r.query);
   } else resultUI = renderRecent();
   return subTabs + searchUI + resultUI;
+}
+
+function renderSearchTabMember(){
+  const u = State.user || {};
+  const helpingBrand = u.brand && BRANDS[u.brand] ? BRANDS[u.brand] : null;
+  const hint = helpingBrand
+    ? `<div style="text-align:center;color:var(--t2);font-size:.9em;margin-top:8px">
+        找不到時會自動通知 <b style="color:${helpingBrand.color}">${helpingBrand.name}</b> 的負責人 ${helpingBrand.tech}
+       </div>`
+    : `<div style="text-align:center;color:var(--or);font-size:.9em;margin-top:8px">
+        ⚠ 還沒選你正在幫的 brand — 上方點 chip 選一個（找不到時才知道要通知誰）
+       </div>`;
+
+  // Wrap search box in big centered container
+  const searchUI = `
+    <div style="max-width:760px;margin:40px auto 0">
+      <div class="search-row" style="margin-bottom:0">
+        <div class="searchbox"><input type="text" id="qbox" placeholder="輸入款號 / RD 號 / 布料描述" value="${escapeHtml(State.search.query)}" style="font-size:1.1em;padding:14px 18px"></div>
+        <button class="btn lg" id="dosearch">搜尋</button>
+        <button class="btn s" id="clearsearch">清除</button>
+      </div>
+      ${hint}
+    </div>
+  `;
+
+  // Result handling — same dispatch as admin, but:
+  //   kind 'recommend' shouldn't happen (we gated it in performSearch for non-admin),
+  //   kind 'notfound' uses simplified renderer
+  let resultUI = '';
+  if(State.search.result){
+    const r = State.search.result;
+    if(r.kind === 'style')           resultUI = renderStyleResult(r.style, r.key);
+    else if(r.kind === 'rd')         resultUI = renderRdResult(r.rd, r.fabric);
+    else if(r.kind === 'multi')      resultUI = renderMultiFabricResult(r.query, r.matches, r.totalCount);
+    else if(r.kind === 'multiStyle') resultUI = renderMultiStyleResult(r.query, r.matches);
+    else if(r.kind === 'notfound' || r.kind === 'recommend')
+      resultUI = renderNotFoundMember(r.query);
+  }
+  return searchUI + (resultUI ? `<div style="margin-top:24px">${resultUI}</div>` : '');
+}
+
+function renderNotFoundMember(q){
+  const u = State.user || {};
+  const hasBrand = u.brand && BRANDS[u.brand];
+  return `
+    <div class="q-display-bar">
+      <span class="lab">${q.startsWith('RD')?'RD':'查詢'}:</span><span class="val">${escapeHtml(q)}</span>
+      <button class="clr" data-clear="1">✕ 清除</button>
+    </div>
+    <div style="max-width:640px;margin:20px auto;background:var(--cd);border:1px solid var(--bd);border-radius:11px;padding:30px 24px;text-align:center">
+      <div style="font-size:3em;opacity:.4;margin-bottom:8px">🔍</div>
+      <h3 style="margin:0 0 6px">找不到 ${escapeHtml(q)}</h3>
+      <div style="color:var(--t2);font-size:.9em;margin-bottom:20px">通知負責人新增吧</div>
+      ${hasBrand
+        ? renderNotifyFormMember(q, u.brand)
+        : `<div style="padding:14px;background:var(--or-soft);color:var(--or);border-radius:7px;font-size:.9em">
+            ⚠ 還沒選你正在幫的 brand — 上方點 chip 選一個
+           </div>`}
+    </div>
+  `;
+}
+
+function renderNotifyFormMember(q, brandKey){
+  const b = BRANDS[brandKey];
+  return `
+    <div style="text-align:left;padding:14px 16px;background:var(--hd);border-radius:9px;border-top:3px solid ${b.color}">
+      <div style="font-size:.88em;color:var(--t2);margin-bottom:6px">📩 通知</div>
+      <div style="font-weight:700;font-size:1.05em;color:${b.color};margin-bottom:12px">${b.name} · ${b.tech}</div>
+      <div style="font-size:.85em;color:var(--t2);font-weight:600;margin-bottom:4px">附訊息（選填）</div>
+      <textarea id="notify-msg" placeholder="例：我在做 D102345，需要這塊布..." style="width:100%;min-height:80px;padding:8px 11px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;font-size:.9em;box-sizing:border-box"></textarea>
+      <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn s" data-clear="1">取消</button>
+        <button class="btn" data-send-notify="${escapeHtml(q)}" data-notify-to="${brandKey}">送出通知</button>
+      </div>
+    </div>
+  `;
 }
 
 function attachSearchTab(){
@@ -1270,9 +1417,28 @@ function performSearch(qRaw){
       return tokens.every(t => haystack.includes(t));
     });
   sortByInUseFirst(matches);
-  if(matches.length === 0) return { kind:'notfound', query:qRaw };
   if(matches.length === 1) return { kind:'rd', rd:matches[0].rd, fabric:matches[0] };
-  return { kind:'multi', query:qRaw, matches:matches.slice(0,50), totalCount:matches.length };
+  if(matches.length > 1) return { kind:'multi', query:qRaw, matches:matches.slice(0,50), totalCount:matches.length };
+
+  // 4. 找不到 — 試解析成布料規格、跑代用布推薦（這對應 v4.38 的行為）
+  //    只要文字裡有 % / gsm / oz 等規格訊號，就值得跑推薦
+  //    成員不跑推薦（找不到直接跳通知，由 user spec 決定）
+  const looksLikeSpec = isAdmin() && /%|\bg\s*\/?\s*m[²2]\b|\bgsm\b|\boz\b|\bgm\b/i.test(qRaw);
+  if(looksLikeSpec){
+    const parsed = parseMainCell(qRaw);
+    if(parsed.length > 0){
+      const pf = parsed[0];
+      // 至少要有 composition 或 weight 才推薦得起來
+      if(pf.composition || pf.weight){
+        const candidates = findCandidates(pf, 5);
+        if(candidates.length > 0){
+          return { kind:'recommend', query:qRaw, parsedFab:pf, candidates };
+        }
+      }
+    }
+  }
+
+  return { kind:'notfound', query:qRaw };
 }
 
 // 排序：使用中的（任何 committed style 引用的）排前面，純公檔排後面
@@ -1353,6 +1519,7 @@ function renderStyleResult(s, key){
           <div class="acts">
             <button class="btn" data-copy-comment="${escapeHtml(key)}">📋 複製 Comment</button>
             <button class="btn s" data-view-rd="${escapeHtml(main.rd)}">看完整資料</button>
+            ${isAdmin()?`<button class="btn s sm" data-edit-main-fab="${escapeHtml(key)}" title="工單改布料時用">✏️ 改主布</button>`:''}
           </div>
           ${main.notes?`<div style="background:rgba(194,92,32,.06);border-left:3px solid var(--or);padding:8px 12px;margin-top:10px;font-size:.83em;color:#7a4a20;border-radius:5px"><b>📝 備註：</b>${escapeHtml(main.notes)}</div>`:''}
         </div>
@@ -1552,8 +1719,83 @@ function renderMultiStyleResult(query, matches){
   `;
 }
 
-function renderNotFound(q){
+function renderRecommendResult(query, parsedFab, candidates){
+  // 顯示解析結果 + 推薦清單
+  const parsedSummary = [
+    parsedFab.type && `type: ${parsedFab.type}`,
+    parsedFab.sub && `sub: ${parsedFab.sub}`,
+    parsedFab.composition && `成分: ${parsedFab.composition}`,
+    parsedFab.weight && `重量: ${parsedFab.weight}`,
+    parsedFab.width && `寬幅: ${parsedFab.width}`
+  ].filter(Boolean).join(' · ') || '(無解析到的規格)';
+  // 算哪些 RD 正在被使用
+  const usedRds = new Set();
+  Store.list('style:').forEach(k => {
+    const s = Store.get('style:'+k);
+    if(!s) return;
+    if(s.mainFabric && s.mainFabric.rd) usedRds.add(s.mainFabric.rd);
+    (s.accessories||[]).forEach(a => { if(a.rd) usedRds.add(a.rd); });
+  });
+  return `
+    <div class="q-display-bar">
+      <span class="lab">搜尋:</span>
+      <span class="val">${escapeHtml(query)}</span>
+      <span style="color:var(--t2);font-size:.88em">→ <b style="color:var(--ac)">推薦 ${candidates.length} 塊代用布</b></span>
+      <button class="clr" data-clear="1">✕ 清除</button>
+    </div>
+    <div class="banner">
+      💡 <b>沒有完全符合的 RD，根據你輸入的規格推薦最接近的：</b><br>
+      <span style="color:var(--t2);font-family:Consolas,monospace;font-size:.88em">解析到 → ${escapeHtml(parsedSummary)}</span>
+    </div>
+    <div class="multi-results">
+      ${candidates.map((c, idx) => {
+        const f = c.fab;
+        const inUse = usedRds.has(f.rd);
+        const diff = c.diff || '';
+        return `<div class="multi-row" data-view-rd="${escapeHtml(f.rd)}">
+          <div class="mr-marker"><span style="font-weight:700;color:var(--ac)">${idx+1}</span></div>
+          <div class="mr-rd"><b>${escapeHtml(f.rd)}</b><div style="font-size:.78em;color:var(--t3)">score ${c.score}</div></div>
+          <div class="mr-brand">
+            <span class="cell-cat">${escapeHtml(f.type||'?')}</span>
+            ${inUse ? '<div style="font-size:.75em;color:var(--gn);margin-top:2px">🟢 使用中</div>' : ''}
+          </div>
+          <div class="mr-info">
+            <div><b>${escapeHtml(f.sub||'—')}</b> · ${escapeHtml(f.composition||'—')}</div>
+            <div style="color:var(--t3);font-size:.82em;margin-top:2px">${escapeHtml(f.weight||'—')} · ${escapeHtml(f.width||'—')} · ${escapeHtml(f.supplier||'—')}${diff?' · '+escapeHtml(diff):''}</div>
+          </div>
+          <div class="mr-arrow">→</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div style="margin-top:20px;padding:14px 16px;background:var(--hd);border-radius:8px;border:1px solid var(--bd2)">
+      <div style="font-size:.88em;font-weight:600;margin-bottom:6px">💬 都不滿意？通知負責人新增</div>
+      ${renderNotifyForm(query)}
+    </div>
+  `;
+}
+
+function renderNotifyForm(q){
   const ownBrand = currentBrandKey() || 'on';
+  return `
+    <div class="notify-form">
+      <div class="lbl">📩 通知哪個品牌的負責人新增？</div>
+      <div class="notify-brands">
+        ${BRAND_KEYS.map(k => {
+          const b = BRANDS[k];
+          return `<div class="notify-brand ${k===ownBrand?'sel':''}" data-notify-brand="${k}" style="border-top-color:${b.color};color:${b.color}">${b.name}${k===ownBrand?' ✓':''}</div>`;
+        }).join('')}
+      </div>
+      <div class="lbl" style="margin-top:6px">附訊息（選填）</div>
+      <textarea id="notify-msg" placeholder="例如：我在做 D102345，需要這塊布..."></textarea>
+      <div class="actions">
+        <button class="btn s" data-clear="1">取消</button>
+        <button class="btn" data-send-notify="${escapeHtml(q)}">送出通知</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderNotFound(q){
   return `
     <div class="q-display-bar">
       <span class="lab">${q.startsWith('RD')?'RD':'查詢'}:</span><span class="val">${escapeHtml(q)}</span>
@@ -1564,21 +1806,7 @@ function renderNotFound(q){
         <div class="ico">🔍</div>
         <h3>找不到 ${escapeHtml(q)}</h3>
         <div class="why">系統的公檔（Knit / Woven / Denim）裡都沒這塊布，查詢紀錄也沒用過。可能是新布還沒登記、也可能 RD 打錯。</div>
-        <div class="notify-form">
-          <div class="lbl">📩 通知哪個品牌的負責人新增？</div>
-          <div class="notify-brands">
-            ${BRAND_KEYS.map(k => {
-              const b = BRANDS[k];
-              return `<div class="notify-brand ${k===ownBrand?'sel':''}" data-notify-brand="${k}" style="border-top-color:${b.color};color:${b.color}">${b.name}${k===ownBrand?' ✓':''}</div>`;
-            }).join('')}
-          </div>
-          <div class="lbl" style="margin-top:6px">附訊息（選填）</div>
-          <textarea id="notify-msg" placeholder="例如：我在做 D102345，需要這塊布..."></textarea>
-          <div class="actions">
-            <button class="btn s" data-clear="1">取消</button>
-            <button class="btn" data-send-notify="${escapeHtml(q)}">送出通知</button>
-          </div>
-        </div>
+        ${renderNotifyForm(q)}
       </div>
       <div class="tips-card">
         <h4>💡 找不到布料常見原因</h4>
@@ -1725,7 +1953,7 @@ function renderExcelRow(p, idx){
       <td><span style="font-size:.85em;color:var(--t2)">${escapeHtml(p.season)}</span></td>
       <td style="text-align:right">
         ${p.committed
-          ? `<span class="sbadge act">✓ 已採用</span>`
+          ? `<span class="sbadge act">✓ 已採用</span>${isAdmin()?` <button class="btn s sm" data-xl-edit-row="${idx}" title="客人換布料時用">✏️ 改</button>`:''}`
           : isAdmin()
             ? (hasRecommend
               ? `<button class="btn sm" data-xl-pick-sub="${idx}">${expanded?'收合 ▴':'選代用 ▾'}</button>`
@@ -1830,6 +2058,22 @@ function attachExcelTab(){
   document.querySelectorAll('[data-xl-commit-sub]').forEach(b => b.onclick = () => commitExcelRowSubstitute(+b.dataset.xlCommitSub));
   document.querySelectorAll('[data-xl-commit-row]').forEach(b => b.onclick = () => commitExcelRowActual(+b.dataset.xlCommitRow));
   document.querySelectorAll('[data-xl-commit-all-actual]').forEach(b => b.onclick = () => commitAllActual());
+  document.querySelectorAll('[data-xl-edit-row]').forEach(b => b.onclick = () => editCommittedRow(+b.dataset.xlEditRow));
+}
+
+function editCommittedRow(idx){
+  const p = State.excel.rows[idx];
+  if(!p || !p.committed) return;
+  if(!confirm('要改採用嗎？\n\n會把這列回到「選擇主布」狀態，但舊的採用紀錄會先保留。\n重新選新布料並按「✓ 採用」後，舊的會自動被新的覆蓋。\n\n如果不重新採用就關掉這頁，舊的採用還是有效。')) return;
+  p.committed = false;
+  // 清掉這列的代用布選擇，讓 admin 重選
+  const recFab = p.fabrics.find(f => f.status === 'recommend');
+  if(recFab){
+    const selKey = `${idx}_${recFab.rd||'empty'}`;
+    delete State.excel.selectedCands[selKey];
+  }
+  toast('已解除採用 — 請重選主布','or');
+  renderTabContent();
 }
 
 function handleExcelFile(file){
@@ -2137,7 +2381,7 @@ function renderSetTemplate(){
       <code>{actual_width}</code> <code>{actual_weight}</code> <code>{actual_shrinkage}</code>
       <code>{actual_supplier}</code> <code>{actual_notes_block}</code>
       <code>{tech_name}</code> <code>{style}</code> <code>{bom}</code> <code>{brand}</code>
-      <br><code>{tech_name}</code> 會自動帶入該款品牌的 3D Tech（Gap→Adia, ON→Yoko, Athleta→Jan, Banana→Tinley）
+      <br><code>{tech_name}</code> 跟著<b>目前登入者</b>走（負責人 = 登入時鎖定；成員 = 上方 chip 選的 brand 對應負責人）
     </div>
     <textarea class="ta" id="t-actual">${escapeHtml(cT)}</textarea>
     <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
@@ -2831,14 +3075,19 @@ function attachResultHandlers(){
     if(s){ State.search.result = { kind:'style', style:s, key:el.dataset.switchBom }; render(); }
   });
   document.querySelectorAll('[data-copy-comment]').forEach(b => b.onclick = () => copyCommentForStyle(b.dataset.copyComment, false));
+  document.querySelectorAll('[data-edit-main-fab]').forEach(b => b.onclick = () => openEditMainFab(b.dataset.editMainFab));
   document.querySelectorAll('[data-notify-brand]').forEach(el => el.onclick = () => {
     document.querySelectorAll('[data-notify-brand]').forEach(x => x.classList.remove('sel'));
     el.classList.add('sel');
   });
   document.querySelectorAll('[data-send-notify]').forEach(b => b.onclick = () => {
     const q = b.dataset.sendNotify;
-    const brandEl = document.querySelector('[data-notify-brand].sel');
-    const brand = brandEl ? brandEl.dataset.notifyBrand : null;
+    // 優先用 data-notify-to (成員 form 直接帶 brand) — 沒有的話 fallback 到舊的 .sel 選擇邏輯
+    let brand = b.dataset.notifyTo;
+    if(!brand){
+      const brandEl = document.querySelector('[data-notify-brand].sel');
+      brand = brandEl ? brandEl.dataset.notifyBrand : null;
+    }
     const msg = (document.getElementById('notify-msg')||{}).value || '';
     if(!brand){ toast('請選一個品牌','or'); return; }
     sendNotify(q, brand, msg);
@@ -2875,10 +3124,13 @@ function copyCommentForStyle(styleKey, autoBypass){
 
 function applyTemplate(tmpl, actual, original, style){
   const notesBlock = actual.notes ? `\nNote: ${actual.notes}` : '';
-  // tech_name: 該款品牌的負責人（不一定是目前登入的人）
-  const techName = (style && style.brand && BRANDS[style.brand])
-    ? BRANDS[style.brand].tech
-    : (State.user ? State.user.name : '');
+  // tech_name: 跟著「現在誰在用」走 —
+  //   admin 登入時就鎖定為該 brand 對應的 tech
+  //   成員透過上方 chip 切換「在幫哪組」，State.user.name 跟著 chip brand 走
+  //   如果成員還沒選 brand，fallback 到該款 brand 的負責人（保險不會空白）
+  const techName = (State.user && State.user.name)
+    ? State.user.name
+    : (style && style.brand && BRANDS[style.brand] ? BRANDS[style.brand].tech : '');
   const repl = {
     actual_rd: actual.rd || '',
     actual_sub: actual.sub || '',
@@ -2937,6 +3189,87 @@ function editNotes(rd){
   addHistory({ action:'note_update', rd, actor:State.user.name });
   toast('備註已更新','gn');
   render();
+}
+
+function openEditMainFab(styleKey){
+  const s = Store.get('style:'+styleKey);
+  if(!s) return;
+  const oldRd = s.mainFabric ? s.mainFabric.rd : '';
+  const oldLabel = s.mainFabric ? (s.mainFabric.label || '') : '';
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-bg" id="em-bg">
+      <div class="modal" style="max-width:560px">
+        <h3>✏️ 改主布 — ${escapeHtml(styleKey)}</h3>
+        <div class="body-x">
+          <div style="font-size:.88em;color:var(--t2);margin-bottom:12px;line-height:1.6">
+            目前主布：<b>${escapeHtml(oldRd)}</b>${oldLabel?` (${escapeHtml(oldLabel)})`:''}<br>
+            輸入新的 RD 號（必須已在公檔內，沒有的話請先到 Excel 公檔上傳或 .fab 掃描補進去）
+          </div>
+          <label style="font-size:.85em;font-weight:600;display:block;margin-bottom:4px">新 RD#</label>
+          <input type="text" id="em-rd" class="ta" style="font-family:Consolas,monospace" placeholder="例：179941 或 RD#179941" autocomplete="off">
+          <div id="em-preview" style="margin-top:10px;min-height:80px"></div>
+          <label style="font-size:.85em;font-weight:600;display:block;margin:12px 0 4px">主布角色名（選填）</label>
+          <input type="text" id="em-label" class="ta" placeholder="例：主料、BACK BODY" value="${escapeHtml(oldLabel)}">
+        </div>
+        <div class="modal-acts">
+          <button class="btn s" id="em-cancel">取消</button>
+          <button class="btn gn" id="em-ok" disabled>✓ 改</button>
+        </div>
+      </div>
+    </div>
+  `;
+  let foundFab = null;
+  const rdInput = document.getElementById('em-rd');
+  const preview = document.getElementById('em-preview');
+  const okBtn = document.getElementById('em-ok');
+  const lookup = () => {
+    const raw = rdInput.value.trim();
+    foundFab = null;
+    okBtn.disabled = true;
+    if(!raw){ preview.innerHTML = ''; return; }
+    const rd = normalizeRD(raw);
+    if(!rd.startsWith('RD#')){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">⚠ 格式不對 (應為 RD#數字 或純數字)</div>`; return; }
+    const f = Store.get('fabric:'+rd);
+    if(!f){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">❌ 公檔找不到 <b>${escapeHtml(rd)}</b>，先到 Settings → 資料管理 補進公檔再來。</div>`; return; }
+    foundFab = f;
+    okBtn.disabled = false;
+    const src = (f.source||'').startsWith('lib:') ? '🟢 Gap Inc Excel' : (f.source||'').startsWith('scan:') ? '⚪ 公檔新布' : (f.source||'').startsWith('bom:') ? '🟢 客人 BOM' : '';
+    preview.innerHTML = `
+      <div style="border-left:3px solid var(--gn);padding:9px 12px;background:rgba(46,125,50,.05);border-radius:5px;font-size:.85em">
+        ✓ 找到 <b>${escapeHtml(f.rd)}</b> ${src}<br>
+        <b>${escapeHtml(f.sub||'(未填)')}</b> · ${escapeHtml(f.composition||'—')}<br>
+        <span style="color:var(--t2)">${escapeHtml(f.weight||'—')} · ${escapeHtml(f.width||'—')} · ${escapeHtml(f.supplier||'—')}</span>
+      </div>
+    `;
+  };
+  rdInput.oninput = lookup;
+  rdInput.onkeydown = e => { if(e.key === 'Enter') lookup(); };
+  setTimeout(() => rdInput.focus(), 50);
+  const close = () => { root.innerHTML = ''; };
+  document.getElementById('em-cancel').onclick = close;
+  document.getElementById('em-bg').onclick = e => { if(e.target.id === 'em-bg') close(); };
+  okBtn.onclick = () => {
+    if(!foundFab) return;
+    const newLabel = document.getElementById('em-label').value.trim();
+    s.mainFabric = { rd: foundFab.rd, label: newLabel };
+    s.setBy = State.user.name;
+    s.setDate = new Date().toLocaleDateString('zh-TW');
+    Store.set('style:'+styleKey, s);
+    addHistory({
+      action:'style_main_changed',
+      style: styleKey,
+      rd: foundFab.rd,
+      original: oldRd,
+      label: newLabel,
+      actor: State.user.name
+    });
+    toast(`已改主布 ${oldRd} → ${foundFab.rd}`,'gn');
+    close();
+    // 重新拉款資料、refresh 詳情頁
+    State.search.result = { kind:'style', style:s, key:styleKey };
+    render();
+  };
 }
 
 function setAsMainOrAcc(rd, mode){
