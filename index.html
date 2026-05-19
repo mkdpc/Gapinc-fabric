@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.21',
+  VERSION: '5.0.22',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -589,6 +589,82 @@ const SUB_TYPES = {
   denim: ['Denim']
 };
 const ALL_SUB_TYPES = [].concat(...Object.values(SUB_TYPES));
+
+// === SOP Subtype Families（從 KNIT.xlsx + WOVEN.xlsx 實際資料抓出，hardcoded） ===
+// Knit 家族（split-on-dash 後的 family 名稱集合）
+const KNIT_FAMILIES = [
+  '4X2','Bonded','Boucle','Circular Knit','Corduroy','Crepe','Double Jacquard',
+  'Double Jersey Jacquard','Double Knit','Drop Needle Rib','Flat Knit','Fleece',
+  'Interlock','Jacquard','Jersey','Jersey Slub','Jersey Stretch','Knit','Lace',
+  'Loop Terry','Melton','Mesh','Micro Fleece','Other: See Comment','Others',
+  'Pique','Pointelle','Profleece','Raschel Knit','Rib','Sherpa','Single Jersey',
+  'Single Jersey Jacquard','Terry','Thermal','Tricot','Tricot Knit','Velour',
+  'Waffle','Warp Knit'
+];
+// Woven 家族
+const WOVEN_FAMILIES = [
+  'Bedford cord','Bonded','Broken','Canvas','Cavalry','Chambray','Chiffon',
+  'Corduroy','Crepe','Dobby','Double Weave','Embroidery','Eyelet','Faille',
+  'Faux Leather','Flannel','Gauze','Georgette','Herringbone','Houndstooth',
+  'Jacquard','Lawn','Melton','Mesh','Organza','Others','Oxford','Pique',
+  'Plain','Poplin','Satin','Seersucker','Swiss Dot Dobby','Taffeta',
+  'Texture','Tricotine','Tweed','Twill','Velvet','Voile'
+];
+// 兩邊都有的家族（admin 查到這些要跳問）
+const OVERLAP_FAMILIES = ['Bonded','Corduroy','Crepe','Jacquard','Melton','Mesh','Others','Pique'];
+
+// Knit 同義組：同組內 family 互相當作 family-match
+const KNIT_SYNONYM_GROUPS = {
+  jersey:                 ['Jersey','Single Jersey','Single Jersey Jacquard','Jersey Slub','Jersey Stretch'],
+  rib:                    ['Rib','Drop Needle Rib','4X2'],  // 加上 NxN regex (動態偵測)
+  tricot:                 ['Tricot','Tricot Knit'],
+  mesh:                   ['Mesh','Warp Knit'],
+  fleece:                 ['Fleece','Micro Fleece','Profleece'],
+  velour:                 ['Velour'],
+  terry:                  ['Terry','Loop Terry'],
+  interlock:              ['Interlock'],
+  double_knit:            ['Double Knit'],
+  double_jersey_jacquard: ['Double Jersey Jacquard'],
+  warp_knit:              ['Warp Knit','Knit','Raschel Knit']
+};
+// 反向查表：family → 同義組 key
+const KNIT_FAMILY_TO_GROUP = (() => {
+  const m = {};
+  Object.entries(KNIT_SYNONYM_GROUPS).forEach(([groupKey, fams]) => {
+    fams.forEach(f => m[f.toLowerCase()] = groupKey);
+  });
+  return m;
+})();
+function isRibPattern(s){ return /^\d+\s*[xX]\s*\d+$/.test((s||'').trim()); }
+function getKnitFamily(subtype){
+  if(!subtype) return null;
+  const t = subtype.trim();
+  if(isRibPattern(t)) return 'Rib';
+  return t.split(/[-–]/)[0].trim();
+}
+function getWovenFamily(subtype){
+  if(!subtype) return null;
+  return subtype.trim().split(/[-–]/)[0].trim();
+}
+function getKnitSynonymGroup(family){
+  if(!family) return null;
+  return KNIT_FAMILY_TO_GROUP[family.toLowerCase()] || family.toLowerCase();
+}
+// classifyType: 給一個 subtype 字串，判定屬於 Knit/Woven/Denim/兩個都有/不知道
+function classifyType(subtype){
+  if(!subtype) return 'unknown';
+  const t = subtype.trim();
+  if(isRibPattern(t)) return 'knit';  // NxN = Rib (Knit)
+  const family = t.split(/[-–]/)[0].trim().toLowerCase();
+  const inKnit  = KNIT_FAMILIES.some(f => f.toLowerCase() === family);
+  const inWoven = WOVEN_FAMILIES.some(f => f.toLowerCase() === family);
+  if(inKnit && inWoven) return 'both';
+  if(inKnit) return 'knit';
+  if(inWoven) return 'woven';
+  return 'unknown';
+}
+const ALL_SUB_TYPES_PARSE = [...new Set([...KNIT_FAMILIES, ...WOVEN_FAMILIES])];  // 用於 parseFields 偵測 sub
+
 const SUPPLIERS = ['KAHATEX','EMTEX','TEXOLA','Kamhing','KAMHING','Eclat','ECLAT','Toray','TORAY','Carvico','CARVICO','Lai Tai','Pongtai','Wing Lap','Kintex','KINTEX'];
 
 function parseMainCell(text){
@@ -677,15 +753,24 @@ function parseFields(f, text){
     else if(m2) f.shrinkage = m2[1]+'% / '+m2[2]+'%';
   }
   if(!f.sub){
-    for(const sub of ALL_SUB_TYPES){
+    // 依長度排序：先匹配「Single Jersey Jacquard」再匹配「Single Jersey」再匹配「Jersey」
+    const sortedFams = [...ALL_SUB_TYPES_PARSE].sort((a,b) => b.length - a.length);
+    for(const sub of sortedFams){
       const re = new RegExp('\\b' + sub.replace(/[\/\\]/g,'\\$&') + '\\b','i');
       if(re.test(text)){
         f.sub = sub;
-        if(SUB_TYPES.knit.includes(sub)) f.type = 'Knit';
-        else if(SUB_TYPES.woven.includes(sub)) f.type = 'Woven';
-        else if(SUB_TYPES.denim.includes(sub)) f.type = 'Denim';
+        // 根據 classifyType 決定 f.type
+        const cls = classifyType(sub);
+        if(cls === 'knit') f.type = 'Knit';
+        else if(cls === 'woven') f.type = 'Woven';
+        // cls === 'both' 不設 type — 留給後續 findCandidates 處理
         break;
       }
+    }
+    // 也偵測 NxN（Rib）
+    if(!f.sub){
+      const ribM = text.match(/\b(\d+\s*[xX]\s*\d+)\b/);
+      if(ribM){ f.sub = ribM[1]; f.type = 'Knit'; }
     }
   }
   if(!f.supplier){
@@ -713,7 +798,7 @@ function determineStatus(parsedFab){
 //   6. Chemical Finish +10   6b. Mechanical Finish +10
 // ============================================================
 const GROUP_A_FIBERS = ['COTTON', 'POLYESTER', 'RAYON', 'VISCOSE']; // Rayon = Viscose
-const SP_KEYWORDS = /\b(SPANDEX|ELASTANE|LYCRA|EL\b|SP\b)/i;
+const SP_KEYWORDS = /\b(SPANDEX|ELASTANE|LYCRA|ELASTIC|EL\b|SP\b)|彈性/i;
 
 function detectSpandex(f){
   if(typeof f.spandex === 'boolean') return f.spandex;
@@ -731,116 +816,273 @@ function parsePrimaryFiber(comp){
 
 function inGroupA(fiber){ return GROUP_A_FIBERS.includes(fiber); }
 
-function findCandidates(parsedFab, limit=3){
+// ============================================================
+// SOP-based fabric search (Gap Inc Substitute Fabric SOP v10.2025)
+// 6-step flow:
+//   1. Type filter (Knit/Woven/Denim — hardcoded from KNIT/WOVEN Excel families)
+//   2. Spandex filter (hard — with/without must match)
+//   3. Subtype filter (family-level, Knit 用同義組、Woven 嚴格)
+//   4. Weight ±15% (hard; 0 結果才放寬到 ±20%)
+//   5. Composition (with-sp ±5% / without-sp ±10%; 多出纖維 >5% 不通過)
+//   5b. Group A fallback (Cotton↔Polyester↔Rayon 永遠跑、排後面)
+//   6. Finish sort (no-finish 排前、has-finish 排後)
+// ============================================================
+
+// 解析 composition 字串成 [{fiber, pct}] — 用於精細比對
+function parseComposition(comp){
+  if(!comp) return [];
+  const out = [];
+  // 多個「nn% Fiber」格式並列，可能用 / 或 , 或空白分隔
+  const re = /(\d+(?:\.\d+)?)\s*%\s*([^,\/\d%]+?)(?=\s*(?:\d+(?:\.\d+)?\s*%|[,\/]|$))/g;
+  let m;
+  while((m = re.exec(comp)) !== null){
+    const fiber = normalizeFiber(m[2]);
+    if(fiber) out.push({ fiber, pct: parseFloat(m[1]) });
+  }
+  return out;
+}
+function normalizeFiber(name){
+  if(!name) return '';
+  // 移除括號內容（例 (BCI)）、取第一個有意義的字
+  let s = name.replace(/\([^)]*\)/g,'').trim();
+  // 取第一個 word（空白分隔）
+  s = s.split(/\s+/)[0].toUpperCase();
+  // 別名統一
+  const aliases = {
+    'VISCOSE':'RAYON',
+    'BCI':'COTTON',
+    'PIMA':'COTTON',
+    'SUPIMA':'COTTON',
+    'EL':'SPANDEX',
+    'SP':'SPANDEX',
+    'LYCRA':'SPANDEX',
+    'ELASTANE':'SPANDEX',
+    'ELASTIC':'SPANDEX',
+    'POLY':'POLYESTER',
+    'NYLON':'NYLON',
+    'PA':'NYLON',
+    'WOOL':'WOOL',
+    'LINEN':'LINEN',
+    'TENCEL':'LYOCELL',
+    'LYOCELL':'LYOCELL',
+    'MODAL':'MODAL'
+  };
+  return aliases[s] || s;
+}
+function isSpandexFiber(fiber){ return normalizeFiber(fiber) === 'SPANDEX'; }
+function inGroupA(fiber){
+  const norm = normalizeFiber(fiber);
+  return GROUP_A_FIBERS.includes(norm);
+}
+
+// 比對單一候選的 composition 是否通過篩選
+//   回傳 { ok:bool, groupA:bool, reason:string }
+function checkComposition(queryFibers, candFibers, tol, allowGroupA){
+  if(queryFibers.length === 0) return { ok:true, groupA:false };
+  const usedCand = new Set();
+  let usedGroupA = false;
+  for(const qf of queryFibers){
+    if(isSpandexFiber(qf.fiber)) continue;  // spandex 在 Step 2 處理
+    let matchIdx = -1;
+    // 先找完全同纖維
+    for(let i = 0; i < candFibers.length; i++){
+      if(usedCand.has(i)) continue;
+      const cf = candFibers[i];
+      if(isSpandexFiber(cf.fiber)) continue;
+      if(cf.fiber === qf.fiber && Math.abs(cf.pct - qf.pct) <= tol * 100){
+        matchIdx = i;
+        break;
+      }
+    }
+    // 沒同纖維 + 允許 Group A → 找 Group A 替代
+    if(matchIdx < 0 && allowGroupA && inGroupA(qf.fiber)){
+      for(let i = 0; i < candFibers.length; i++){
+        if(usedCand.has(i)) continue;
+        const cf = candFibers[i];
+        if(isSpandexFiber(cf.fiber)) continue;
+        if(inGroupA(cf.fiber) && Math.abs(cf.pct - qf.pct) <= tol * 100){
+          matchIdx = i;
+          usedGroupA = true;
+          break;
+        }
+      }
+    }
+    if(matchIdx < 0) return { ok:false, groupA:false, reason:`找不到對應 ${qf.fiber} 的 ${qf.pct}%（容差 ${(tol*100).toFixed(0)}%）` };
+    usedCand.add(matchIdx);
+  }
+  // 檢查候選有沒有 query 沒指定的「多出纖維」>5%
+  for(let i = 0; i < candFibers.length; i++){
+    if(usedCand.has(i)) continue;
+    const cf = candFibers[i];
+    if(isSpandexFiber(cf.fiber)) continue;
+    if(cf.pct > 5) return { ok:false, groupA:false, reason:`候選多出 ${cf.fiber} ${cf.pct}%（>5% 不通過）` };
+  }
+  return { ok:true, groupA:usedGroupA };
+}
+
+// 主入口
+// 回傳 { needsDisambiguation: bool, subtype, candidates: [{fab, info, groupA, weightRelaxed, subRank}] }
+function findCandidates(parsedFab, limit=50){
   const all = Store.list('fabric:').map(k => Store.get('fabric:'+k)).filter(Boolean);
 
-  // Hard Filter 1: Type
-  const passType = all.filter(c =>
-    !parsedFab.type || !c.type || parsedFab.type === c.type
-  );
+  // === Step 1: Type ===
+  let queryType = parsedFab.type;  // 可能是 'Knit' / 'Woven' / 'Denim' / null
+  let needsDisambig = false;
+  if(!queryType && parsedFab.sub){
+    const cls = classifyType(parsedFab.sub);
+    if(cls === 'knit') queryType = 'Knit';
+    else if(cls === 'woven') queryType = 'Woven';
+    else if(cls === 'both'){
+      // 8 個 overlap family 之一 — 需要 admin 選
+      needsDisambig = true;
+    }
+  }
+  if(needsDisambig){
+    return { needsDisambiguation:true, subtype:parsedFab.sub, candidates:[] };
+  }
+  let pool = all;
+  if(queryType){
+    pool = pool.filter(c => !c.type || c.type.toLowerCase() === queryType.toLowerCase());
+  }
 
-  // Hard Filter 2: Spandex (only filter if both sides have info)
-  const passSpandex = passType.filter(c => {
-    const oSp = detectSpandex(parsedFab);
-    const cSp = detectSpandex(c);
-    if(!parsedFab.composition || !c.composition) return true; // can't tell, keep
-    return oSp === cSp;
-  });
-
-  // Score everyone (strict mode first)
-  let scored = passSpandex.map(cand => {
-    const r = scoreCandidate(parsedFab, cand, false);
-    return { fab:cand, score:r.score, breakdown:r.breakdown, diff:describeDiff(parsedFab, cand, r.breakdown) };
-  });
-
-  // Group A fallback: if <5 candidates with positive composition score, relax composition
-  const strictWithComp = scored.filter(s => s.breakdown.composition > 0);
-  if(strictWithComp.length < 5){
-    scored = scored.map(s => {
-      const r = scoreCandidate(parsedFab, s.fab, true); // allow Group A
-      if(r.score > s.score){
-        return { fab:s.fab, score:r.score, breakdown:r.breakdown, diff:describeDiff(parsedFab, s.fab, r.breakdown) };
-      }
-      return s;
+  // === Step 2: Spandex ===
+  if(parsedFab.composition || typeof parsedFab.spandex === 'boolean'){
+    const querySpx = detectSpandex(parsedFab);
+    pool = pool.filter(c => {
+      if(!c.composition && typeof c.spandex !== 'boolean') return true;  // 沒資料保留
+      return detectSpandex(c) === querySpx;
     });
   }
 
-  scored.sort((a,b) => b.score - a.score);
-  return scored.slice(0, limit).map(s => ({ fab:s.fab, score:s.score, diff:s.diff }));
-}
-
-function scoreCandidate(orig, cand, allowGroupA){
-  const b = { subtype:0, weight:0, composition:0, chemFinish:0, mechFinish:0, groupA:false };
-
-  // Rule 3: Material Subtype +40
-  if(orig.sub && cand.sub && orig.sub.toLowerCase() === cand.sub.toLowerCase()){
-    b.subtype = 40;
+  // === Step 3: Subtype (Family-level + 排序) ===
+  let subRankFn = () => 99;
+  if(parsedFab.sub){
+    const queryFam = (queryType === 'Woven' ? getWovenFamily : getKnitFamily)(parsedFab.sub);
+    const querySynGroup = queryType === 'Knit' ? getKnitSynonymGroup(queryFam) : queryFam.toLowerCase();
+    pool = pool.filter(c => {
+      if(!c.sub) return false;  // 必須有 subtype 資料
+      const candFam = (queryType === 'Woven' ? getWovenFamily : getKnitFamily)(c.sub);
+      if(!candFam) return false;
+      if(queryType === 'Knit'){
+        return getKnitSynonymGroup(candFam) === querySynGroup;
+      }
+      // Woven 嚴格 family 比對
+      return candFam.toLowerCase() === queryFam.toLowerCase();
+    });
+    // Rank: A 完全一致 > B 同 family + keyword 重疊 > C 純 family 相同 > D 同義組
+    subRankFn = (c) => {
+      if(!c.sub) return 99;
+      const cs = c.sub.trim().toLowerCase();
+      const qs = parsedFab.sub.trim().toLowerCase();
+      if(cs === qs) return 0;  // A 完全相等
+      const candFam = (queryType === 'Woven' ? getWovenFamily : getKnitFamily)(c.sub);
+      const sameFam = candFam && candFam.toLowerCase() === queryFam.toLowerCase();
+      if(sameFam){
+        // 有 keyword 重疊？
+        const qWords = qs.split(/[\s\-–]+/).filter(Boolean);
+        const cWords = cs.split(/[\s\-–]+/).filter(Boolean);
+        if(qWords.some(w => cWords.includes(w))) return 1;  // B 同 family + keyword
+        return 2;  // C 純同 family
+      }
+      return 3;  // D 同義組（Knit only）
+    };
   }
 
-  // Rule 4: Weight +30 (within ±15%; over range ranks lower)
-  const oW = numFromStr(orig.weight), cW = numFromStr(cand.weight);
-  if(oW && cW){
-    const diffPct = Math.abs(oW - cW) / oW * 100;
-    if(diffPct <= 15){
-      b.weight = 30;
+  // === Step 4: Weight ±15%，0 結果才放寬到 ±20% ===
+  let weightRelaxed = false;
+  const queryWt = numFromStr(parsedFab.weight);
+  if(queryWt && queryWt > 0){
+    const filter15 = pool.filter(c => {
+      const cw = numFromStr(c.weight);
+      if(!cw) return false;
+      return Math.abs(cw - queryWt) / queryWt <= 0.15;
+    });
+    if(filter15.length > 0){
+      pool = filter15;
     } else {
-      // 線性衰減：超過 15% 後每多 1% 扣 1 分，最低 0
-      b.weight = Math.max(0, 30 - (diffPct - 15));
+      // 放寬到 ±20%
+      pool = pool.filter(c => {
+        const cw = numFromStr(c.weight);
+        if(!cw) return false;
+        return Math.abs(cw - queryWt) / queryWt <= 0.20;
+      });
+      if(pool.length > 0) weightRelaxed = true;
+      // ±20% 還 0 就是真的找不到，pool = []
     }
   }
 
-  // Rule 5: Composition +45 (primary fiber match + pct within ±5% w/SP or ±10% w/o SP)
-  const oP = parsePrimaryFiber(orig.composition);
-  const cP = parsePrimaryFiber(cand.composition);
-  if(oP && cP){
-    const oSp = detectSpandex(orig), cSp = detectSpandex(cand);
-    const bothHaveSp = oSp && cSp;
-    const tol = bothHaveSp ? 5 : 10;
-    if(oP.fiber === cP.fiber){
-      // Primary fiber exactly matches
-      if(Math.abs(oP.pct - cP.pct) <= tol) b.composition = 45;
-      else b.composition = 25;  // 主纖維對但比例落差大
-    } else if(allowGroupA && inGroupA(oP.fiber) && inGroupA(cP.fiber)){
-      // Rule 5b: Group A fallback (Cotton ↔ Polyester ↔ Rayon)
-      b.composition = 25;
-      b.groupA = true;
-    }
+  // === Step 5: Composition (strict pass + Group A pass) ===
+  const queryFibers = parseComposition(parsedFab.composition || '');
+  let strictPass = pool;
+  let groupAPass = [];
+  if(queryFibers.length > 0){
+    const hasSpx = detectSpandex(parsedFab);
+    const tol = hasSpx ? 0.05 : 0.10;
+    strictPass = pool.filter(c => checkComposition(queryFibers, parseComposition(c.composition||''), tol, false).ok);
+    // Group A pass：strict 沒通過、但 Group A 替代後通過的
+    const strictRds = new Set(strictPass.map(c => c.rd));
+    groupAPass = pool.filter(c => {
+      if(strictRds.has(c.rd)) return false;  // 排除已在 strict 的
+      const r = checkComposition(queryFibers, parseComposition(c.composition||''), tol, true);
+      return r.ok && r.groupA;
+    });
   }
 
-  // Rule 6: Chemical Finish +10 (same group; needs data — skip if missing)
-  if(orig.chemicalFinish && cand.chemicalFinish &&
-     orig.chemicalFinish.toLowerCase() === cand.chemicalFinish.toLowerCase()){
-    b.chemFinish = 10;
+  // === Step 6: Finish (sort only, not filter) ===
+  // hasFinish = chemFinish 或 mechFinish 有非空、非 Normal/Blank 值
+  function hasFinish(c){
+    const isBlank = v => !v || /^(none|normal|n\/a|blank|無|沒有|nil)$/i.test(String(v).trim());
+    return !(isBlank(c.chemFinish) && isBlank(c.mechFinish));
   }
 
-  // Rule 6b: Mechanical Finish +10
-  if(orig.mechanicalFinish && cand.mechanicalFinish &&
-     orig.mechanicalFinish.toLowerCase() === cand.mechanicalFinish.toLowerCase()){
-    b.mechFinish = 10;
-  }
+  // 包成 result objects
+  const wrapResult = (c, groupA) => ({
+    fab: c,
+    groupA,
+    weightRelaxed,
+    subRank: subRankFn(c),
+    weightDiff: queryWt ? Math.abs((numFromStr(c.weight)||0) - queryWt) / queryWt : 0,
+    hasFinish: hasFinish(c)
+  });
 
-  const score = Math.round(b.subtype + b.weight + b.composition + b.chemFinish + b.mechFinish);
-  return { score, breakdown:b };
+  // 通用排序：strict 優先 > subRank ASC > weight 差距 ASC > 沒 finish 優先
+  const sortFn = (a, b) => {
+    // groupA 後排
+    if(a.groupA !== b.groupA) return a.groupA ? 1 : -1;
+    if(a.subRank !== b.subRank) return a.subRank - b.subRank;
+    if(a.weightDiff !== b.weightDiff) return a.weightDiff - b.weightDiff;
+    // 沒 finish 排前面（你說「盡可能不要有的」）
+    if(a.hasFinish !== b.hasFinish) return a.hasFinish ? 1 : -1;
+    return 0;
+  };
+
+  const results = [
+    ...strictPass.map(c => wrapResult(c, false)),
+    ...groupAPass.map(c => wrapResult(c, true))
+  ];
+  results.sort(sortFn);
+
+  return {
+    needsDisambiguation: false,
+    candidates: results.slice(0, limit),
+    weightRelaxed,
+    queryType
+  };
 }
 
-function describeDiff(orig, cand, b){
+function describeCandidateDiff(parsedFab, cand, groupA, weightRelaxed){
   const parts = [];
-  if(b.subtype > 0) parts.push('同 sub +40');
-  if(b.weight === 30) parts.push('克重 ±15% +30');
-  else if(b.weight > 0){
-    const oW = numFromStr(orig.weight), cW = numFromStr(cand.weight);
-    if(oW && cW){
-      const d = Math.round((cW-oW)/oW*100);
-      parts.push(`克重 ${d>0?'+':''}${d}% +${b.weight.toFixed(0)}`);
-    }
+  const qw = numFromStr(parsedFab.weight), cw = numFromStr(cand.weight);
+  if(qw && cw){
+    const d = Math.round((cw - qw) / qw * 100);
+    if(d === 0) parts.push('重量 0%');
+    else parts.push(`重量 ${d>0?'+':''}${d}%`);
   }
-  if(b.composition === 45) parts.push('成分完全符合 +45');
-  else if(b.composition === 25 && b.groupA) parts.push('Group A 替代 +25');
-  else if(b.composition === 25) parts.push('主纖維對但 % 差大 +25');
-  if(b.chemFinish > 0) parts.push('Chem Finish +10');
-  if(b.mechFinish > 0) parts.push('Mech Finish +10');
-  return parts.join(' · ') || '差異大';
+  if(weightRelaxed) parts.push('⚠ weight 放寬到 ±20%');
+  if(groupA) parts.push('⚠ Group A 替代纖維');
+  return parts.join(' · ');
 }
+
 
 function numFromStr(s){
   if(!s) return null;
@@ -882,16 +1124,18 @@ function detectHeaderAndCols(rows){
 // ============================================================
 const LIB_COLUMN_HINTS = {
   rd:          [/^rd$/i, /^rd\s*#/i, /^rd\s*no/i, /^rd\s*number/i, /^material\s*(number|code|no)/i, /^code$/i, /^id$/i, /^編號/, /^料號/],
-  sub:         [/^sub.*type/i, /^material\s*name/i, /^construction/i, /^fabric\s*name/i, /^name$/i, /^description/i, /^子類/, /^布種/, /^名稱/],
-  composition: [/^composition/i, /^content/i, /^fiber/i, /^成分/, /^組成/],
-  weight:      [/^weight/i, /^gsm/i, /^g\s*\/\s*m/i, /^克重/, /^重量/, /^bw$/i],
+  sub:         [/^sub.*type/i, /^material\s*subtype/i, /^construction/i, /^material\s*name/i, /^fabric\s*name/i, /^name$/i, /^description/i, /^子類/, /^布種/, /^名稱/],
+  composition: [/^composition/i, /^content/i, /^fiber/i, /^成分/, /^組成/, /^quality\s*details/i],
+  weight:      [/^weight/i, /^gsm/i, /^g\s*\/\s*m/i, /^克重/, /^重量/, /^bw$/i, /^before\s*wash\s*weight/i],
   width:       [/^width/i, /^cw$/i, /^cuttable/i, /^寬幅/, /^幅寬/, /^可裁幅/],
   shrinkage:   [/shrink/i, /縮率/, /縮水/],
   supplier:    [/^supplier/i, /^vendor/i, /^factory/i, /^mill/i, /^source/i, /^廠商/, /^供應商/],
   season:      [/^season/i, /^季別/, /^季/, /^date/i, /^年份/],
-  spandex:     [/^spandex/i, /^elast/i, /^彈性/, /^lycra/i, /^sp$/i],
+  spandex:     [/^spandex\s*content/i, /^spandex/i, /^elast/i, /^彈性/, /^lycra/i, /^sp$/i],
   notes:       [/^notes?$/i, /^remark/i, /^comment/i, /^備註/, /^memo/i, /^note$/i, /^description.*remark/i],
-  brand:       [/^brand/i, /^customer/i, /^client/i, /^品牌/, /^客戶/]
+  brand:       [/^originating\s*brands?/i, /^brand/i, /^customer/i, /^client/i, /^品牌/, /^客戶/],
+  chemFinish:  [/^chemical\s*finish\s*name/i, /^chemical\s*finish$/i, /^chemical/i],
+  mechFinish:  [/^mechanical\s*finish/i, /^mechanical/i]
 };
 
 function detectLibraryHeader(rows){
@@ -947,10 +1191,13 @@ function parseSpandexCell(spandexCell, compositionCell){
     const t = String(spandexCell).toUpperCase().trim();
     if(['Y','YES','TRUE','1','有','含','SP'].includes(t)) return true;
     if(['N','NO','FALSE','0','無','不含'].includes(t)) return false;
+    // 處理 Gap Inc Excel 實際格式："with Spandex Content" / "without Spandex Content"
+    if(/WITHOUT\s+SPANDEX/i.test(t)) return false;
+    if(/WITH\s+SPANDEX/i.test(t))    return true;
   }
   if(compositionCell){
     const t = String(compositionCell).toLowerCase();
-    if(/spandex|elastane|lycra|elasthan/.test(t)) return true;
+    if(/spandex|elastane|lycra|elasthan|elastic|彈性/.test(t)) return true;
   }
   return false;
 }
@@ -1000,6 +1247,8 @@ function parseLibraryExcel(file, fabricType){
             supplier: get('supplier'),
             season: get('season'),
             spandex: parseSpandexCell(get('spandex'), get('composition')),
+            chemFinish: get('chemFinish'),
+            mechFinish: get('mechFinish'),
             notes: get('notes'),
             source: source
           });
@@ -1270,7 +1519,8 @@ function renderSearchTab(){
     if(r.kind === 'style')           resultUI = renderStyleResult(r.style, r.key);
     else if(r.kind === 'rd')         resultUI = renderRdResult(r.rd, r.fabric);
     else if(r.kind === 'multi')      resultUI = renderMultiFabricResult(r.query, r.matches, r.totalCount);
-    else if(r.kind === 'recommend')  resultUI = renderRecommendResult(r.query, r.parsedFab, r.candidates);
+    else if(r.kind === 'recommend')   resultUI = renderRecommendResult(r.query, r.parsedFab, r.candidates, r.weightRelaxed, r.queryType);
+    else if(r.kind === 'disambiguate') resultUI = renderDisambiguateResult(r.query, r.parsedFab, r.subtype);
     else if(r.kind === 'multiStyle') resultUI = renderMultiStyleResult(r.query, r.matches);
     else if(r.kind === 'notfound')   resultUI = renderNotFound(r.query);
   } else resultUI = renderRecent();
@@ -1430,9 +1680,12 @@ function performSearch(qRaw){
       const pf = parsed[0];
       // 至少要有 composition 或 weight 才推薦得起來
       if(pf.composition || pf.weight){
-        const candidates = findCandidates(pf, 5);
-        if(candidates.length > 0){
-          return { kind:'recommend', query:qRaw, parsedFab:pf, candidates };
+        const result = findCandidates(pf, 50);
+        if(result.needsDisambiguation){
+          return { kind:'disambiguate', query:qRaw, parsedFab:pf, subtype:result.subtype };
+        }
+        if(result.candidates.length > 0){
+          return { kind:'recommend', query:qRaw, parsedFab:pf, candidates:result.candidates, weightRelaxed:result.weightRelaxed, queryType:result.queryType };
         }
       }
     }
@@ -1719,7 +1972,7 @@ function renderMultiStyleResult(query, matches){
   `;
 }
 
-function renderRecommendResult(query, parsedFab, candidates){
+function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, queryType){
   // 顯示解析結果 + 推薦清單
   const parsedSummary = [
     parsedFab.type && `type: ${parsedFab.type}`,
@@ -1744,17 +1997,20 @@ function renderRecommendResult(query, parsedFab, candidates){
       <button class="clr" data-clear="1">✕ 清除</button>
     </div>
     <div class="banner">
-      💡 <b>沒有完全符合的 RD，根據你輸入的規格推薦最接近的：</b><br>
-      <span style="color:var(--t2);font-family:Consolas,monospace;font-size:.88em">解析到 → ${escapeHtml(parsedSummary)}</span>
+      💡 <b>沒有完全符合的 RD，根據 SOP 篩選出最接近的 ${candidates.length} 塊：</b><br>
+      <span style="color:var(--t2);font-family:Consolas,monospace;font-size:.88em">解析到 → ${queryType?`type: ${queryType} · `:''}${escapeHtml(parsedSummary)}</span>
+      ${weightRelaxed ? '<br><span style="color:var(--or);font-weight:600">⚠ Weight ±15% 沒結果，已放寬到 ±20%</span>' : ''}
     </div>
     <div class="multi-results">
       ${candidates.map((c, idx) => {
         const f = c.fab;
         const inUse = usedRds.has(f.rd);
-        const diff = c.diff || '';
+        const diff = describeCandidateDiff(parsedFab, f, c.groupA, c.weightRelaxed);
+        const badges = [];
+        if(c.groupA) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">Group A</span>');
         return `<div class="multi-row" data-view-rd="${escapeHtml(f.rd)}">
           <div class="mr-marker"><span style="font-weight:700;color:var(--ac)">${idx+1}</span></div>
-          <div class="mr-rd"><b>${escapeHtml(f.rd)}</b><div style="font-size:.78em;color:var(--t3)">score ${c.score}</div></div>
+          <div class="mr-rd"><b>${escapeHtml(f.rd)}</b>${badges.length?'<div style="margin-top:3px">'+badges.join(' ')+'</div>':''}</div>
           <div class="mr-brand">
             <span class="cell-cat">${escapeHtml(f.type||'?')}</span>
             ${inUse ? '<div style="font-size:.75em;color:var(--gn);margin-top:2px">🟢 使用中</div>' : ''}
@@ -1770,6 +2026,31 @@ function renderRecommendResult(query, parsedFab, candidates){
     <div style="margin-top:20px;padding:14px 16px;background:var(--hd);border-radius:8px;border:1px solid var(--bd2)">
       <div style="font-size:.88em;font-weight:600;margin-bottom:6px">💬 都不滿意？通知負責人新增</div>
       ${renderNotifyForm(query)}
+    </div>
+  `;
+}
+
+function renderDisambiguateResult(query, parsedFab, subtype){
+  // 8 個 overlap family 之一 — 請 admin 自己選 Knit 還是 Woven
+  return `
+    <div class="q-display-bar">
+      <span class="lab">搜尋:</span>
+      <span class="val">${escapeHtml(query)}</span>
+      <button class="clr" data-clear="1">✕ 清除</button>
+    </div>
+    <div class="banner" style="background:var(--or-soft);color:var(--or);border-left-color:var(--or)">
+      ⚠ <b>「${escapeHtml(subtype)}」這個 subtype 在 Knit 跟 Woven 公檔裡都存在。</b><br>
+      <span style="font-size:.88em">請告訴系統你要找的是哪一種，才能正確篩選。</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;max-width:520px;margin:20px 0">
+      <button class="btn lg" data-disambig-type="Knit" style="padding:20px;border-top:4px solid var(--ac)">
+        <div style="font-size:1.2em;font-weight:700">Knit ${escapeHtml(subtype)}</div>
+        <div style="font-size:.85em;color:var(--t2);margin-top:4px">針織</div>
+      </button>
+      <button class="btn lg" data-disambig-type="Woven" style="padding:20px;border-top:4px solid var(--gn)">
+        <div style="font-size:1.2em;font-weight:700">Woven ${escapeHtml(subtype)}</div>
+        <div style="font-size:.85em;color:var(--t2);margin-top:4px">梭織</div>
+      </button>
     </div>
   `;
 }
@@ -1987,7 +2268,7 @@ function formatTrims(text){
 function renderSubSelect(p, rowIdx){
   const recFab = p.fabrics.find(f => f.status === 'recommend');
   if(!recFab) return '';
-  const candidates = recFab.candidates || findCandidates(recFab);
+  const candidates = recFab.candidates || (findCandidates(recFab, 50).candidates);
   const selKey = `${rowIdx}_${recFab.rd||'empty'}`;
   const selectedCand = State.excel.selectedCands[selKey];
   return `<div class="sub-select">
@@ -2094,7 +2375,8 @@ function handleExcelFile(file){
         const subMat = String(r[cols.subMat] ?? '').trim();
         const fabrics = parseMainCell(mainMat).map(f => {
           const st = determineStatus(f);
-          return { ...f, ...st, candidates: st.status === 'recommend' ? findCandidates(f) : [] };
+          const cands = st.status === 'recommend' ? findCandidates(f, 50).candidates : [];
+          return { ...f, ...st, candidates: cands };
         });
         const styleKey = style && bom ? `${style.split('_')[0]}_${bom}` : style;
         const existing = Store.get('style:'+styleKey);
@@ -2409,29 +2691,28 @@ function renderSetTemplate(){
 
 function renderSetSOP(){
   const rules = [
-    { n:'1',  name:'Type',              logic:'Knit→Knit, Woven→Woven, Denim→Denim', type:'Hard Filter', cls:'hf' },
-    { n:'2',  name:'Spandex',           logic:'Must match', type:'Hard Filter', cls:'hf' },
-    { n:'3',  name:'Material Subtype',  logic:'Same subtype preferred', type:'Score +40', cls:'sc' },
-    { n:'4',  name:'Weight',            logic:'±15% range; over range ranks lower', type:'Score +30', cls:'sc' },
-    { n:'5',  name:'Composition',       logic:'Primary fiber match, ±5%(w/ SP) / ±10%(w/o SP) relative', type:'Score +45', cls:'sc' },
-    { n:'5b', name:'Group A Fallback',  logic:'Cotton ↔ Polyester ↔ Rayon (when <5 results)', type:'Relaxed', cls:'rx' },
-    { n:'6',  name:'Chemical Finish',   logic:'Same group preferred (SOP Appendix B)', type:'Score +10', cls:'sc' },
-    { n:'6b', name:'Mechanical Finish', logic:'Same group preferred (SOP Appendix B)', type:'Score +10', cls:'sc' }
+    { n:'1',  name:'Type',              logic:'Knit/Woven/Denim — 用 KNIT/WOVEN 公檔的 subtype 反推；Pique/Mesh 等 8 個共用 family 會跳問', type:'Hard Filter', cls:'hf' },
+    { n:'2',  name:'Spandex',           logic:'with/without 必須完全一致（含 spandex/elastane/lycra/elastic/彈性）', type:'Hard Filter', cls:'hf' },
+    { n:'3',  name:'Material Subtype',  logic:'Family 必須一致（Knit 用同義組 / Woven 嚴格分 family）— Single Jersey ≡ Jersey, Rib ≡ NxN 等', type:'Hard Filter', cls:'hf' },
+    { n:'4',  name:'Weight',            logic:'±15% 必過；0 結果才放寬到 ±20%；±20% 還 0 就找不到', type:'Hard Filter', cls:'hf' },
+    { n:'5',  name:'Composition',       logic:'每個 query 纖維容差 ±5%(w/SP) / ±10%(w/o SP)；候選多出 >5% 的纖維 → 不通過', type:'Hard Filter', cls:'hf' },
+    { n:'5b', name:'Group A Fallback',  logic:'Cotton ↔ Polyester ↔ Rayon 互換（永遠跑、標 ⚠ Group A、排在嚴格通過的後面）', type:'Always-on', cls:'rx' },
+    { n:'6',  name:'Finish (Chem+Mech)',logic:'不篩選，僅排序：「沒處理 / blank / Normal」優先，有處理排後面', type:'Soft Sort', cls:'sc' }
   ];
   return `<div class="set-section">
-    <h3><span class="lbl">搜尋布料 SOP Rules</span><span class="meta">優先順序 (Priority Order)</span></h3>
+    <h3><span class="lbl">搜尋布料 SOP Rules</span><span class="meta">基於 Gap Inc Substitute Fabric SOP v10.2025</span></h3>
     <div class="template-help">
-      <b>判定流程：</b><br>
-      Step 1：先用 Hard Filter（Type、Spandex）排除不合的候選<br>
-      Step 2：剩下的依 Score 規則加分排序，前 3 名顯示為推薦代用<br>
-      Step 3：若可過 Step 1 的候選 &lt; 5 個，啟用 Group A Fallback（Cotton / Polyester / Rayon 互通，降低分數）<br>
-      <b>滿分：</b> 40 + 30 + 45 + 10 + 10 = <b>135</b>（無上限正規化，目前以原始分顯示）
+      <b>判定流程（6 個步驟）：</b><br>
+      Step 1-5 都是 <b>Hard Filter</b> — 不通過就剔除、不會出現在結果裡<br>
+      Step 5b Group A 永遠跑、把放寬纖維後通過的候選排在嚴格通過的後面<br>
+      Step 6 是 sort（不剔除）— 「盡可能不要有 finish 處理」<br>
+      <b>不限筆數</b>：通過 1-5 的全部列出，最多 50 筆（顯示效能上限）
     </div>
     <div style="background:var(--cd);border:1px solid var(--bd);border-radius:9px;overflow:hidden">
-      <div style="display:grid;grid-template-columns:50px 1fr 2fr auto;gap:14px;padding:10px 14px;background:var(--hd2);font-size:.82em;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.3px;border-bottom:2px solid var(--bd)">
+      <div style="display:grid;grid-template-columns:50px 1fr 2.5fr auto;gap:14px;padding:10px 14px;background:var(--hd2);font-size:.82em;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:.3px;border-bottom:2px solid var(--bd)">
         <div>#</div><div>Rule</div><div>Logic</div><div>Type</div>
       </div>
-      ${rules.map(r => `<div style="display:grid;grid-template-columns:50px 1fr 2fr auto;gap:14px;padding:11px 14px;border-top:1px solid var(--bd2);font-size:.88em;align-items:center">
+      ${rules.map(r => `<div style="display:grid;grid-template-columns:50px 1fr 2.5fr auto;gap:14px;padding:11px 14px;border-top:1px solid var(--bd2);font-size:.88em;align-items:center">
         <div style="font-family:Consolas,monospace;font-weight:700;color:var(--t3)">${r.n}</div>
         <div style="font-weight:600">${escapeHtml(r.name)}</div>
         <div style="color:var(--t2);line-height:1.4">${escapeHtml(r.logic)}</div>
@@ -2444,12 +2725,37 @@ function renderSetSOP(){
     </div>
   </div>
   <div class="set-section">
+    <h3><span class="lbl">Subtype Family — Knit 同義組</span></h3>
+    <div class="template-help" style="line-height:1.7">
+      ${Object.entries(KNIT_SYNONYM_GROUPS).map(([k, fams]) =>
+        `<div style="margin-bottom:6px"><b style="display:inline-block;min-width:140px;color:var(--ac)">${k}：</b><span style="color:var(--t2)">${fams.join(' / ')}</span></div>`
+      ).join('')}
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--bd2)">
+        <b>Rib 特例：</b><code>NxN</code> 純數字格式（例 4X2、1x1、2x2）自動歸 Rib family
+      </div>
+    </div>
+  </div>
+  <div class="set-section">
+    <h3><span class="lbl">Subtype Family — Woven 嚴格分組</span></h3>
+    <div class="template-help" style="line-height:1.7">
+      每個 family 自成一組、不跨組互推（例：Plain ≠ Lawn ≠ Voile）<br>
+      <span style="color:var(--t2);font-size:.88em">${WOVEN_FAMILIES.join(' / ')}</span>
+    </div>
+  </div>
+  <div class="set-section">
+    <h3><span class="lbl">Overlap Family（兩邊都有的 8 個）</span></h3>
+    <div class="template-help">
+      查到這些 family 會跳對話框、由 admin 自己選 Knit 還是 Woven：<br>
+      <code style="font-size:1em;color:var(--or)">${OVERLAP_FAMILIES.join('  ·  ')}</code>
+    </div>
+  </div>
+  <div class="set-section">
     <h3><span class="lbl">補充說明</span></h3>
     <div class="template-help" style="line-height:1.7">
-      <b>Group A：</b>Cotton、Polyester、Rayon (Viscose) — 主纖維屬於這三種時可以互替（Group A 替代分 +25）<br>
-      <b>SP 偵測：</b>composition 含 Spandex / Elastane / Lycra 字樣即視為含 Spandex<br>
-      <b>Appendix B（Finish 分組）：</b>v5.0 尚未匯入完整 Appendix B 對照表，目前 Chemical / Mechanical Finish 只做字串比對。若有完整對照表請傳給我，會做成可編輯設定<br>
-      <b>規則編輯器：</b>v5.0 SOP Rules 為唯讀展示；v5.1 會加上 UI 讓你直接調權重 / 加新規則
+      <b>Group A：</b>Cotton、Polyester、Rayon (= Viscose) — 主纖維屬於這三種時可以互替<br>
+      <b>SP 偵測：</b>composition 含 Spandex / Elastane / Lycra / Elastic / 彈性 字樣即視為含 Spandex<br>
+      <b>Appendix B（Finish 分組）：</b>目前不啟用嚴格分組篩選 — 因為實務上查詢 99% 不會帶 finish 資訊，所以 finish 只當 sort（沒處理排前面）<br>
+      <b>家族來源：</b>Knit 40 個 family、Woven 40 個 family，從 KNIT_Public.xlsx / WOVEN_Public.xlsx 實際資料抓出 hardcode
     </div>
   </div>`;
 }
@@ -3076,6 +3382,20 @@ function attachResultHandlers(){
   });
   document.querySelectorAll('[data-copy-comment]').forEach(b => b.onclick = () => copyCommentForStyle(b.dataset.copyComment, false));
   document.querySelectorAll('[data-edit-main-fab]').forEach(b => b.onclick = () => openEditMainFab(b.dataset.editMainFab));
+  document.querySelectorAll('[data-disambig-type]').forEach(b => b.onclick = () => {
+    // admin 選了 Knit 或 Woven — 修改 parsedFab.type 並重跑 findCandidates
+    const r = State.search.result;
+    if(!r || r.kind !== 'disambiguate') return;
+    const chosenType = b.dataset.disambigType;  // 'Knit' or 'Woven'
+    const pf = { ...r.parsedFab, type: chosenType };
+    const result = findCandidates(pf, 50);
+    if(result.candidates.length > 0){
+      State.search.result = { kind:'recommend', query:r.query, parsedFab:pf, candidates:result.candidates, weightRelaxed:result.weightRelaxed, queryType:chosenType };
+    } else {
+      State.search.result = { kind:'notfound', query:r.query };
+    }
+    render();
+  });
   document.querySelectorAll('[data-notify-brand]').forEach(el => el.onclick = () => {
     document.querySelectorAll('[data-notify-brand]').forEach(x => x.classList.remove('sel'));
     el.classList.add('sel');
