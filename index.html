@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.24',
+  VERSION: '5.0.25',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -935,6 +935,7 @@ function checkComposition(queryFibers, candFibers, tol, allowGroupA){
 // 回傳 { needsDisambiguation: bool, subtype, candidates: [{fab, info, groupA, weightRelaxed, subRank}] }
 function findCandidates(parsedFab, limit=50){
   const all = Store.list('fabric:').map(k => Store.get('fabric:'+k)).filter(Boolean);
+  const diag = { total: all.length, afterType: 0, afterSpandex: 0, afterSub: 0, afterWeight: 0, strictPass: 0, groupAPass: 0 };
 
   // === Step 1: Type ===
   let queryType = parsedFab.type;  // 可能是 'Knit' / 'Woven' / 'Denim' / null
@@ -949,12 +950,13 @@ function findCandidates(parsedFab, limit=50){
     }
   }
   if(needsDisambig){
-    return { needsDisambiguation:true, subtype:parsedFab.sub, candidates:[] };
+    return { needsDisambiguation:true, subtype:parsedFab.sub, candidates:[], diag };
   }
   let pool = all;
   if(queryType){
     pool = pool.filter(c => !c.type || c.type.toLowerCase() === queryType.toLowerCase());
   }
+  diag.afterType = pool.length;
 
   // === Step 2: Spandex ===
   if(parsedFab.composition || typeof parsedFab.spandex === 'boolean'){
@@ -964,6 +966,7 @@ function findCandidates(parsedFab, limit=50){
       return detectSpandex(c) === querySpx;
     });
   }
+  diag.afterSpandex = pool.length;
 
   // === Step 3: Subtype (Family-level + 排序) ===
   let subRankFn = () => 99;
@@ -998,6 +1001,7 @@ function findCandidates(parsedFab, limit=50){
       return 3;  // D 同義組（Knit only）
     };
   }
+  diag.afterSub = pool.length;
 
   // === Step 4: Weight ±15%，0 結果才放寬到 ±20% ===
   let weightRelaxed = false;
@@ -1021,6 +1025,7 @@ function findCandidates(parsedFab, limit=50){
       // ±20% 還 0 就是真的找不到，pool = []
     }
   }
+  diag.afterWeight = pool.length;
 
   // === Step 5: Composition (strict pass + Group A pass) ===
   const queryFibers = parseComposition(parsedFab.composition || '');
@@ -1038,6 +1043,8 @@ function findCandidates(parsedFab, limit=50){
       return r.ok && r.groupA;
     });
   }
+  diag.strictPass = strictPass.length;
+  diag.groupAPass = groupAPass.length;
 
   // === Step 6: Finish (sort only, not filter) ===
   // hasFinish = chemFinish 或 mechFinish 有非空、非 Normal/Blank 值
@@ -1077,7 +1084,8 @@ function findCandidates(parsedFab, limit=50){
     needsDisambiguation: false,
     candidates: results.slice(0, limit),
     weightRelaxed,
-    queryType
+    queryType,
+    diag
   };
 }
 
@@ -2321,7 +2329,19 @@ function formatTrims(text){
 function renderSubSelect(p, rowIdx){
   const recFab = p.fabrics.find(f => f.status === 'recommend');
   if(!recFab) return '';
-  const candidates = recFab.candidates || (findCandidates(recFab, 50).candidates);
+  // 用 cached 結果、但若 cached 是 [] 就重算（避免 BOM 先上傳、公檔後上傳的 race condition）
+  let candidates, diag;
+  if(recFab.candidates && recFab.candidates.length > 0){
+    candidates = recFab.candidates;
+    diag = recFab.candidatesDiag || null;
+  } else {
+    const fresh = findCandidates(recFab, 50);
+    candidates = fresh.candidates;
+    diag = fresh.diag;
+    // 快取回去
+    recFab.candidates = candidates;
+    recFab.candidatesDiag = diag;
+  }
   const selKey = `${rowIdx}_${recFab.rd||'empty'}`;
   const selectedCand = State.excel.selectedCands[selKey];
   return `<div class="sub-select">
@@ -2342,7 +2362,26 @@ function renderSubSelect(p, rowIdx){
     </div>
     <div style="font-size:.88em;color:var(--bl);font-weight:700;margin-bottom:10px">💡 系統推薦的代用布料</div>
     <div class="sub-candidates">
-      ${candidates.length === 0 ? `<div style="padding:14px 16px;color:var(--t3);font-size:.85em">沒有相似的候選 — 可能要先請負責人新增這塊 RD</div>` :
+      ${candidates.length === 0 ? `<div style="padding:14px 16px;background:var(--or-soft);border:1px solid var(--or);border-radius:6px">
+          <div style="color:var(--or);font-weight:700;margin-bottom:8px">沒有相似的候選</div>
+          ${diag ? `<div style="font-family:Consolas,monospace;font-size:.82em;color:var(--t2);line-height:1.8">
+            <div>公檔總數：<b>${diag.total}</b> 塊布</div>
+            <div>Step 1 Type 過濾後：<b>${diag.afterType}</b></div>
+            <div>Step 2 Spandex 過濾後：<b>${diag.afterSpandex}</b></div>
+            <div>Step 3 Subtype 過濾後：<b>${diag.afterSub || diag.afterSpandex}</b> ${!recFab.sub?'<span style="color:var(--t3)">(query 沒 subtype，沒篩)</span>':''}</div>
+            <div>Step 4 Weight ±15% 過濾後：<b>${diag.afterWeight || diag.afterSpandex}</b> ${!recFab.weight?'<span style="color:var(--t3)">(query 沒重量，沒篩)</span>':''}</div>
+            <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
+            <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
+          </div>` : ''}
+          <div style="margin-top:10px;color:var(--t2);font-size:.85em">
+            ${diag && diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT_Public.xlsx / WOVEN_Public.xlsx' :
+              diag && diag.afterSpandex === 0 ? `⚠ 含/不含彈性的條件擋掉全部 — query 偵測為 ${detectSpandex(recFab)?'含彈性':'不含彈性'}` :
+              diag && diag.afterWeight === 0 ? '⚠ 重量條件擋掉全部 — 沒有公檔在 ±20% 範圍內' :
+              diag && diag.strictPass + diag.groupAPass === 0 ? '⚠ 成分條件擋掉全部 — 沒有公檔的纖維比例在容差內' :
+              '可能要先請負責人新增這塊 RD'}
+          </div>
+          <button class="btn s sm" style="margin-top:10px" data-recand="${rowIdx}">🔄 重新搜尋</button>
+        </div>` :
         candidates.map(c => {
           const isSel = selectedCand === c.fab.rd;
           return `<label class="sub-cand ${isSel?'selected':''}">
@@ -2402,6 +2441,18 @@ function attachExcelTab(){
   document.querySelectorAll('[data-xl-commit-row]').forEach(b => b.onclick = () => commitExcelRowActual(+b.dataset.xlCommitRow));
   document.querySelectorAll('[data-xl-commit-all-actual]').forEach(b => b.onclick = () => commitAllActual());
   document.querySelectorAll('[data-xl-edit-row]').forEach(b => b.onclick = () => editCommittedRow(+b.dataset.xlEditRow));
+  document.querySelectorAll('[data-recand]').forEach(b => b.onclick = () => {
+    const rowIdx = +b.dataset.recand;
+    const p = State.excel.rows[rowIdx];
+    if(!p) return;
+    const recFab = p.fabrics.find(f => f.status === 'recommend');
+    if(!recFab) return;
+    // 清掉舊 cache 強制重算
+    delete recFab.candidates;
+    delete recFab.candidatesDiag;
+    renderTabContent();
+    toast('已重新搜尋','gn');
+  });
 }
 
 function editCommittedRow(idx){
