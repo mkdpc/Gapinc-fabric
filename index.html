@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.22',
+  VERSION: '5.0.24',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -725,8 +725,19 @@ function parseFields(f, text){
     if(m) f.rd = 'RD#' + m[1];
   }
   if(!f.composition){
-    const m = text.match(/\d+%\s*[\w\(\)\u4e00-\u9fff]+(?:\s*[,，]?\s*\d+%\s*[\w\(\)\u4e00-\u9fff]+)*/);
-    if(m) f.composition = m[0].trim();
+    // 抓所有「nn% Fiber Name」段落，允許多字纖維名（例 Polyester Conventional / Elastane Conventional Spandex）
+    // 一個段落結束於：下一個 nn% / 逗號 / 不接 % 的數字（如重量）/ 字串結尾
+    const re = /(\d+(?:\.\d+)?)\s*%\s*([A-Za-z][A-Za-z\s\(\)\-\/]*?)(?=\s*[,，]|\s*\d|\s*$)/g;
+    const segs = [];
+    let m;
+    while((m = re.exec(text)) !== null){
+      const pct = m[1];
+      const fiber = m[2].trim();
+      if(fiber) segs.push(pct + '% ' + fiber);
+    }
+    if(segs.length > 0){
+      f.composition = segs.join(' / ');
+    }
   }
   if(!f.weight){
     // 抓 g/m² 系列：280 g/m2、280gsm、280gm、280 g m2、280 g/m² 等
@@ -1091,9 +1102,9 @@ function numFromStr(s){
 }
 
 const COLUMN_HINTS = {
-  style:   [/dev\.?\s*style/i, /style\s*#/i, /^style$/i, /款號/],
+  style:   [/dev\.?\s*style/i, /style\s*#/i, /^style$/i, /^design$/i, /款號/],
   bom:     [/bom\s*#/i, /^bom$/i, /bom\s*number/i],
-  mainMat: [/^主料/, /main\s*fabric/i, /primary\s*fabric/i, /shell/i],
+  mainMat: [/^主料/, /^主布/, /main\s*fabric/i, /primary\s*fabric/i, /shell/i, /^fabric$/i, /^body\s*fabric$/i],
   subMat:  [/^副料/, /trims?/i, /accessories?/i],
   season:  [/season/i, /季別/],
   customer:[/customer/i, /brand/i, /客戶/, /品牌/],
@@ -1998,7 +2009,7 @@ function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, quer
     </div>
     <div class="banner">
       💡 <b>沒有完全符合的 RD，根據 SOP 篩選出最接近的 ${candidates.length} 塊：</b><br>
-      <span style="color:var(--t2);font-family:Consolas,monospace;font-size:.88em">解析到 → ${queryType?`type: ${queryType} · `:''}${escapeHtml(parsedSummary)}</span>
+      <span style="color:var(--t2);font-family:Consolas,monospace;font-size:.88em">解析到 → ${escapeHtml(parsedSummary)}</span>
       ${weightRelaxed ? '<br><span style="color:var(--or);font-weight:600">⚠ Weight ±15% 沒結果，已放寬到 ±20%</span>' : ''}
     </div>
     <div class="multi-results">
@@ -2134,6 +2145,47 @@ function pushRecent(q, result){
 // ============================================================
 // EXCEL TAB
 // ============================================================
+function renderColPicker(){
+  const headers = State.excel.headers || [];
+  const cols = State.excel.cols || {};
+  if(headers.length === 0) return '';
+  const fields = [
+    ['style',    '款號 (Style)',   '必選'],
+    ['bom',      'BOM',            '必選'],
+    ['mainMat',  '主料 (Main)',    '必選 — 解析布料'],
+    ['subMat',   '副料 (Trims)',   '選填'],
+    ['season',   '季別',           '選填'],
+    ['customer', '客戶/品牌',      '選填']
+  ];
+  const optionsHtml = headers.map((h, i) => {
+    const preview = String(h || '').trim().slice(0, 30) || '(空白)';
+    return { i, label: `${String.fromCharCode(65+i)}: ${preview}` };
+  });
+  const missing = ['style','bom','mainMat'].filter(k => cols[k] === undefined);
+  return `<div style="background:var(--cd);border:1px solid var(--bd);border-radius:9px;padding:13px 16px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <b style="font-size:.95em">📊 欄位對應</b>
+      ${missing.length > 0
+        ? `<span style="color:var(--or);font-size:.85em">⚠ 缺 ${missing.join(', ')} — 請從下面選</span>`
+        : `<span style="color:var(--gn);font-size:.85em">✓ 已對應，下面可手動調整</span>`}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px 14px">
+      ${fields.map(([k, label, hint]) => {
+        const cur = cols[k];
+        const isMust = hint.startsWith('必選');
+        const missingMark = isMust && cur === undefined;
+        return `<div>
+          <div style="font-size:.78em;color:${missingMark?'var(--or)':'var(--t2)'};margin-bottom:3px;font-weight:${missingMark?'700':'500'}">${label} <span style="color:var(--t3);font-weight:400">· ${hint}</span></div>
+          <select data-col-pick="${k}" style="width:100%;padding:6px 8px;border:1px solid ${missingMark?'var(--or)':'var(--bd)'};border-radius:5px;font-size:.85em;font-family:Consolas,monospace;background:${missingMark?'var(--or-soft)':'#fff'}">
+            <option value="">(不使用)</option>
+            ${optionsHtml.map(o => `<option value="${o.i}" ${cur===o.i?'selected':''}>${escapeHtml(o.label)}</option>`).join('')}
+          </select>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
 function renderExcelTab(){
   const rows = State.excel.rows;
   if(rows.length === 0){
@@ -2175,6 +2227,7 @@ function renderExcelTab(){
       <div class="stat rd"><div class="n">${emptyCnt}</div><div class="l">RD 缺</div></div>
       <div><button class="btn s sm" data-xl-reset="1">換檔案</button></div>
     </div>
+    ${renderColPicker()}
     <div class="filter-row">
       <span class="filter-label">篩選</span>
       ${[
@@ -2323,6 +2376,15 @@ function attachExcelTab(){
     drop.ondrop = e => { e.preventDefault(); drop.classList.remove('dragover'); if(e.dataTransfer.files.length) handleExcelFile(e.dataTransfer.files[0]); };
     input.onchange = e => { if(e.target.files.length) handleExcelFile(e.target.files[0]); };
   }
+  // 欄位對應下拉
+  document.querySelectorAll('[data-col-pick]').forEach(sel => {
+    sel.onchange = () => {
+      const key = sel.dataset.colPick;
+      if(sel.value === '') delete State.excel.cols[key];
+      else State.excel.cols[key] = parseInt(sel.value, 10);
+      reparseExcelRows();
+    };
+  });
   document.querySelectorAll('[data-xl-filter]').forEach(b => b.onclick = () => { State.excel.filter = b.dataset.xlFilter; State.excel.expandedRow = null; renderTabContent(); });
   document.querySelectorAll('[data-xl-reset]').forEach(b => b.onclick = () => { State.excel = { fileName:null, sheetName:null, headerIdx:0, cols:{}, rows:[], filter:'all', expandedRow:null, selectedCands:{} }; renderTabContent(); });
   document.querySelectorAll('[data-xl-pick-sub]').forEach(b => b.onclick = () => {
@@ -2357,6 +2419,41 @@ function editCommittedRow(idx){
   renderTabContent();
 }
 
+function parseExcelRows(rawRows, cols, headerIdx, fileName){
+  const dataRows = rawRows.slice(headerIdx + 1).filter(r => r && r.some(c => String(c||'').trim()));
+  return dataRows.map((r, idx) => {
+    const get = k => cols[k] !== undefined ? String(r[cols[k]] ?? '').trim() : '';
+    const style = get('style');
+    const bom = get('bom');
+    const mainMat = get('mainMat');
+    const subMat = get('subMat');
+    const fabrics = mainMat ? parseMainCell(mainMat).map(f => {
+      const st = determineStatus(f);
+      const cands = st.status === 'recommend' ? findCandidates(f, 50).candidates : [];
+      return { ...f, ...st, candidates: cands };
+    }) : [];
+    const styleKey = style && bom ? `${style.split('_')[0]}_${bom}` : style;
+    const existing = Store.get('style:'+styleKey);
+    return {
+      rowNum: headerIdx + 2 + idx,
+      style, bom, styleKey,
+      mainMat, subMat,
+      season: get('season'),
+      category: get('category'),
+      fabrics,
+      committed: !!(existing && existing._fromImport === fileName)
+    };
+  });
+}
+
+function reparseExcelRows(){
+  if(!State.excel.rawRows) return;
+  State.excel.rows = parseExcelRows(State.excel.rawRows, State.excel.cols, State.excel.headerIdx, State.excel.fileName);
+  State.excel.expandedRow = null;
+  State.excel.selectedCands = {};
+  renderTabContent();
+}
+
 function handleExcelFile(file){
   const reader = new FileReader();
   reader.onload = e => {
@@ -2366,33 +2463,22 @@ function handleExcelFile(file){
       const sheet = wb.Sheets[sn];
       const rows = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' });
       const { headerIdx, cols, score } = detectHeaderAndCols(rows);
-      if(score === 0){ toast('找不到標題列（找不到 Dev.Style / 主料 等關鍵字）','rd'); return; }
-      const dataRows = rows.slice(headerIdx + 1).filter(r => r && r.some(c => String(c||'').trim()));
-      const parsed = dataRows.map((r, idx) => {
-        const style = String(r[cols.style] ?? '').trim();
-        const bom = String(r[cols.bom] ?? '').trim();
-        const mainMat = String(r[cols.mainMat] ?? '').trim();
-        const subMat = String(r[cols.subMat] ?? '').trim();
-        const fabrics = parseMainCell(mainMat).map(f => {
-          const st = determineStatus(f);
-          const cands = st.status === 'recommend' ? findCandidates(f, 50).candidates : [];
-          return { ...f, ...st, candidates: cands };
-        });
-        const styleKey = style && bom ? `${style.split('_')[0]}_${bom}` : style;
-        const existing = Store.get('style:'+styleKey);
-        return {
-          rowNum: headerIdx + 2 + idx,
-          style, bom, styleKey,
-          mainMat, subMat,
-          season: String(r[cols.season] ?? '').trim(),
-          category: String(r[cols.category] ?? '').trim(),
-          fabrics,
-          committed: !!(existing && existing._fromImport === file.name)
-        };
-      });
-      State.excel = { fileName:file.name, sheetName:sn, headerIdx, cols, rows:parsed, filter:'all', expandedRow:null, selectedCands:{} };
+      // 不論自動偵測有沒有命中、都繼續 — 使用者可以手動調整欄位對應
+      const headers = rows[headerIdx] || [];
+      const parsed = parseExcelRows(rows, cols, headerIdx, file.name);
+      State.excel = {
+        fileName: file.name, sheetName: sn,
+        headerIdx, cols,
+        rawRows: rows, headers,
+        rows: parsed,
+        filter:'all', expandedRow:null, selectedCands:{}
+      };
       addHistory({ action:'excel_import', source:file.name });
-      toast(`已解析 ${parsed.length} 列`,'gn');
+      if(score === 0){
+        toast(`已上傳，沒自動偵測到欄位 — 請手動指定`,'or');
+      } else {
+        toast(`已解析 ${parsed.length} 列（${score}/7 欄自動偵測，可手動調整）`,'gn');
+      }
       renderTabContent();
     }catch(err){
       toast('解析失敗：'+err.message,'rd');
