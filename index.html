@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.26',
+  VERSION: '5.0.28',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -681,7 +681,7 @@ function parseMainCell(text){
       parseFields(current, labelMatch[2]);
       continue;
     }
-    const rdAtStart = line.match(/^RD#?(\d{3,})\b/i);
+    const rdAtStart = line.match(/^RD#?\s*(\d{3,})\b/i);
     if(rdAtStart){
       if(current) fabrics.push(finalizeFabric(current));
       current = { role:null, labelFormat:false, raw:line };
@@ -696,7 +696,7 @@ function parseMainCell(text){
       parseFields(current, line);
       continue;
     }
-    const rdAnywhere = line.match(/(?:^|[\s,])RD#?(\d{3,})\b/i);
+    const rdAnywhere = line.match(/(?:^|[\s,])RD#?\s*(\d{3,})\b/i);
     if(rdAnywhere && !current){
       current = { role:null, labelFormat:false, raw:line };
       parseFields(current, line);
@@ -716,7 +716,7 @@ function parseMainCell(text){
 
 function parseFields(f, text){
   if(!f.rd){
-    const m = text.match(/RD#?(\d{3,})/i);
+    const m = text.match(/RD#?\s*(\d{3,})/i);
     if(m) f.rd = 'RD#' + m[1];
   }
   // 文字開頭裸數字 + 逗號（例 "主料: 1068277, Fleece, ..."）
@@ -727,7 +727,7 @@ function parseFields(f, text){
   if(!f.composition){
     // 抓所有「nn% Fiber Name」段落，允許多字纖維名（例 Polyester Conventional / Elastane Conventional Spandex）
     // 一個段落結束於：下一個 nn% / 逗號 / 不接 % 的數字（如重量）/ 字串結尾
-    const re = /(\d+(?:\.\d+)?)\s*%\s*([A-Za-z][A-Za-z\s\(\)\-\/]*?)(?=\s*[,，]|\s*\d|\s*$)/g;
+    const re = /(\d+(?:\.\d+)?)\s*%\s*([A-Za-z\(][A-Za-z\s\(\)\-]*?)(?=\s*[,，\/]|\s*\d|\s*$)/g;
     const segs = [];
     let m;
     while((m = re.exec(text)) !== null){
@@ -754,7 +754,7 @@ function parseFields(f, text){
     }
   }
   if(!f.width){
-    const m = text.match(/(\d{2,3}(?:\s*[\/x]\s*\d{2,3})?)\s*"\s*(CW|cw)?/);
+    const m = text.match(/(\d{2,3}(?:\.\d+)?(?:\s*[\/x]\s*\d{2,3}(?:\.\d+)?)?)\s*(?:"|in\b)\s*(CW|cw)?/i);
     if(m) f.width = m[1].replace(/\s+/g,'') + '"' + (m[2] ? ' '+m[2].toUpperCase() : '');
   }
   if(!f.shrinkage){
@@ -864,31 +864,28 @@ function parseComposition(comp){
 }
 function normalizeFiber(name){
   if(!name) return '';
-  // 移除括號內容（例 (BCI)）、取第一個有意義的字
-  let s = name.replace(/\([^)]*\)/g,'').trim();
-  // 取第一個 word（空白分隔）
-  s = s.split(/\s+/)[0].toUpperCase();
-  // 別名統一
+  // 先看有沒有括號內容當備用（例 "(BCI)" → "BCI"）
+  const parenInner = (name.match(/\(([^)]+)\)/)||[])[1];
+  // 移除括號內容
+  let cleaned = name.replace(/\([^)]*\)/g,'').trim();
+  if(!cleaned && parenInner) cleaned = parenInner.trim();
+  // 別名 + 已知 fiber map（key 是 upper case、value 是 normalized fiber name）
   const aliases = {
-    'VISCOSE':'RAYON',
-    'BCI':'COTTON',
-    'PIMA':'COTTON',
-    'SUPIMA':'COTTON',
-    'EL':'SPANDEX',
-    'SP':'SPANDEX',
-    'LYCRA':'SPANDEX',
-    'ELASTANE':'SPANDEX',
-    'ELASTIC':'SPANDEX',
-    'POLY':'POLYESTER',
-    'NYLON':'NYLON',
-    'PA':'NYLON',
-    'WOOL':'WOOL',
-    'LINEN':'LINEN',
-    'TENCEL':'LYOCELL',
-    'LYOCELL':'LYOCELL',
-    'MODAL':'MODAL'
+    'COTTON':'COTTON','POLYESTER':'POLYESTER','RAYON':'RAYON','SPANDEX':'SPANDEX',
+    'NYLON':'NYLON','WOOL':'WOOL','LINEN':'LINEN','LYOCELL':'LYOCELL',
+    'MODAL':'MODAL','ACRYLIC':'ACRYLIC','SILK':'SILK','HEMP':'HEMP','METALLIC':'METALLIC',
+    'VISCOSE':'RAYON','BCI':'COTTON','PIMA':'COTTON','SUPIMA':'COTTON',
+    'EL':'SPANDEX','SP':'SPANDEX','LYCRA':'SPANDEX','ELASTANE':'SPANDEX','ELASTIC':'SPANDEX',
+    'POLY':'POLYESTER','PA':'NYLON','POLYAMIDE':'NYLON','TENCEL':'LYOCELL'
   };
-  return aliases[s] || s;
+  // 逐個 word 看哪個是已知 fiber（這樣 "US Cotton" 會找到 Cotton、"Modal Lenzing TENCEL" 會找到 Modal）
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  for(const w of words){
+    const upper = w.toUpperCase().replace(/[^A-Z]/g,'');
+    if(aliases[upper]) return aliases[upper];
+  }
+  // 都沒找到、用第一個 word（fallback）
+  return (words[0]||'').toUpperCase();
 }
 function isSpandexFiber(fiber){ return normalizeFiber(fiber) === 'SPANDEX'; }
 function inGroupA(fiber){
