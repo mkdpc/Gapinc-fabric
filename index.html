@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.25',
+  VERSION: '5.0.26',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -797,7 +797,17 @@ function finalizeFabric(f){
 function determineStatus(parsedFab){
   if(!parsedFab.rd) return { status:'empty' };
   const lib = Store.get('fabric:'+parsedFab.rd);
-  if(lib) return { status:'actual', fromLib:lib };
+  if(lib){
+    // 用公檔的資料補足 BOM cell 沒寫的欄位（特別是 sub 跟 type）
+    const enriched = {};
+    if(!parsedFab.sub && lib.sub) enriched.sub = lib.sub;
+    if(!parsedFab.type && lib.type) enriched.type = lib.type;
+    if(!parsedFab.composition && lib.composition) enriched.composition = lib.composition;
+    if(!parsedFab.weight && lib.weight) enriched.weight = lib.weight;
+    if(!parsedFab.width && lib.width) enriched.width = lib.width;
+    if(!parsedFab.supplier && lib.supplier) enriched.supplier = lib.supplier;
+    return { status:'actual', fromLib:lib, ...enriched };
+  }
   return { status:'recommend' };
 }
 
