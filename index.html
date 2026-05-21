@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.36',
+  VERSION: '5.0.37',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -972,6 +972,25 @@ function checkComposition(queryFibers, candFibers, tol, allowGroupA){
   return { ok:true, groupA:usedGroupA };
 }
 
+// Group A 合併模式：query 的 Group A 加總 vs cand 的 Group A 加總
+// 用在 query 有 2+ 個 Group A 纖維（例 56% Rayon + 39% Poly = 95% Group A）
+// 想對到 cand 把這些合在一個纖維（例 95% Cotton + 5% Spandex）
+// 容差用百分點（5 = ±5pp）
+function checkCompositionGroupAUnified(queryFibers, candFibers, tol){
+  const qNonSp = queryFibers.filter(f => !isSpandexFiber(f.fiber));
+  if(qNonSp.length === 0) return false;
+  const qGroupASum = qNonSp.filter(f => inGroupA(f.fiber)).reduce((s, f) => s + f.pct, 0);
+  if(qGroupASum < 50) return false;  // query 的 Group A 太少、不適用合併模式
+  // 候選不能有 >5% 的非 Group A 非 spandex 纖維
+  const cNonSp = candFibers.filter(f => !isSpandexFiber(f.fiber));
+  for(const cf of cNonSp){
+    if(!inGroupA(cf.fiber) && cf.pct > 5) return false;
+  }
+  // 雙方 Group A 加總要近（百分點容差）
+  const cGroupASum = cNonSp.filter(f => inGroupA(f.fiber)).reduce((s, f) => s + f.pct, 0);
+  return Math.abs(cGroupASum - qGroupASum) <= tol * 100;
+}
+
 // 主入口
 // 回傳 { needsDisambiguation: bool, subtype, candidates: [{fab, info, groupA, weightRelaxed, subRank}] }
 function findCandidates(parsedFab, limit=50){
@@ -1082,11 +1101,11 @@ function findCandidates(parsedFab, limit=50){
 
   // === Step 5: Composition (strict pass + Group A pass) ===
   const queryFibers = parseComposition(parsedFab.composition || '');
+  const hasSpx = detectSpandex(parsedFab);
+  const tol = hasSpx ? 0.05 : 0.10;
   let strictPass = pool;
   let groupAPass = [];
   if(queryFibers.length > 0){
-    const hasSpx = detectSpandex(parsedFab);
-    const tol = hasSpx ? 0.05 : 0.10;
     strictPass = pool.filter(c => checkComposition(queryFibers, parseComposition(c.composition||''), tol, false).ok);
     // Group A pass：strict 沒通過、但 Group A 替代後通過的
     const strictRds = new Set(strictPass.map(c => c.rd));
@@ -1099,25 +1118,27 @@ function findCandidates(parsedFab, limit=50){
   diag.strictPass = strictPass.length;
   diag.groupAPass = groupAPass.length;
 
-  // === Step 5c: 自動放寬 — 當 strict+GroupA < 3 個、補入候選 ===
+  // === Step 5b': Group A 合併 — 加總對應、容許不同 fiber 分布（例 56R/39P → 95Cot 或 95Poly）===
+  let groupAUnifiedPass = [];
+  if(queryFibers.length > 0){
+    const usedRds = new Set([...strictPass, ...groupAPass].map(c => c.rd));
+    groupAUnifiedPass = pool.filter(c => {
+      if(usedRds.has(c.rd)) return false;
+      const cf = parseComposition(c.composition || '');
+      if(cf.length === 0) return false;
+      return checkCompositionGroupAUnified(queryFibers, cf, tol);
+    });
+  }
+  diag.groupAUnifiedPass = groupAUnifiedPass.length;
+
+  // === Step 5c: 重量砍光時的救援、只在 Step 4 死光時觸發（不再做成分放寬、避免列 比例不符 噪音）===
   let approxPass = [];
-  if(strictPass.length + groupAPass.length < 3){
-    if(weightKilledAll && poolBeforeWeight.length > 0){
-      // Step 4 砍光的話、退回 Step 3 pool、用更寬的 ±30% weight 範圍篩
-      if(queryWt && queryWt > 0){
-        approxPass = poolBeforeWeight.filter(c => {
-          const cw = numFromStr(c.weight);
-          if(!cw) return false;  // 沒重量資料的不算
-          return Math.abs(cw - queryWt) / queryWt <= 0.30;
-        });
-      } else {
-        approxPass = poolBeforeWeight.slice();
-      }
-    } else if(queryFibers.length > 0 && pool.length > 0){
-      // 一般 case：成分擋掉、放寬看 Step 4 通過的
-      const usedRds = new Set([...strictPass, ...groupAPass].map(c => c.rd));
-      approxPass = pool.filter(c => !usedRds.has(c.rd));
-    }
+  if(strictPass.length + groupAPass.length + groupAUnifiedPass.length === 0 && weightKilledAll && poolBeforeWeight.length > 0 && queryWt > 0){
+    approxPass = poolBeforeWeight.filter(c => {
+      const cw = numFromStr(c.weight);
+      if(!cw) return false;
+      return Math.abs(cw - queryWt) / queryWt <= 0.30;
+    });
   }
   diag.approxPass = approxPass.length;
 
@@ -1154,6 +1175,7 @@ function findCandidates(parsedFab, limit=50){
   const results = [
     ...strictPass.map(c => wrapResult(c, false, false)),
     ...groupAPass.map(c => wrapResult(c, true, false)),
+    ...groupAUnifiedPass.map(c => wrapResult(c, true, false)),
     ...approxPass.map(c => wrapResult(c, false, true))
   ];
   results.sort(sortFn);
@@ -2151,8 +2173,9 @@ function renderRecommendEmpty(query, parsedFab, diag){
           <div>Step 3 Subtype 過濾後：<b>${parsedFab.sub ? diag.afterSub : (diag.afterSpandex+' (query 沒 subtype 沒篩)')}</b></div>
           <div>Step 4 Weight ±15% 過濾後：<b>${parsedFab.weight ? diag.afterWeight : (diag.afterSub+' (query 沒重量 沒篩)')}</b>${diag.weightStats && parsedFab.weight ? ` <span style="color:var(--t3)">(${diag.weightStats.withWt} 有重量、${diag.weightStats.withoutWt} 沒重量)</span>` : ''}</div>
           <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
-          <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
-          <div>Step 5c 自動放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(strict+GroupA &lt; 3 時啟用)</span></div>
+          <div>Step 5b Group A 通過 (per-fiber)：<b>${diag.groupAPass}</b></div>
+          <div>Step 5b' Group A 通過 (合併)：<b>${diag.groupAUnifiedPass||0}</b> <span style="color:var(--t3)">(總和對應、容許不同分布)</span></div>
+          <div>Step 5c 重量放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(重量砍光時才啟用)</span></div>
         </div>
         <div style="margin-top:10px;color:var(--t2);font-size:.85em">
           ${diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT/WOVEN 公檔' :
@@ -2202,7 +2225,7 @@ function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, quer
         const inUse = usedRds.has(f.rd);
         const diff = describeCandidateDiff(parsedFab, f, c.groupA, c.weightRelaxed);
         const badges = [];
-        if(c.approximate) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">⚠ 比例不符</span>');
+        if(c.approximate) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">⚠ 重量範圍放寬</span>');
         else if(c.groupA) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">Group A</span>');
         const adoptBtn = isAdmin() ? `<button class="btn s sm" data-adopt-sub="${escapeHtml(f.rd)}" style="white-space:nowrap" title="採用為代用、設定款號跟客人原始 RD">💾 採用為代用</button>` : '';
         return `<div class="multi-row" data-view-rd="${escapeHtml(f.rd)}">
@@ -2608,8 +2631,9 @@ function renderSubSelect(p, rowIdx){
             <div>Step 3 Subtype 過濾後：<b>${recFab.sub ? diag.afterSub : (diag.afterSpandex+' (沒 subtype 沒篩)')}</b></div>
             <div>Step 4 Weight ±15% 過濾後：<b>${recFab.weight ? diag.afterWeight : (diag.afterSub+' (沒重量 沒篩)')}</b>${diag.weightStats && recFab.weight ? ` <span style="color:var(--t3)">(${diag.weightStats.withWt} 有重量、${diag.weightStats.withoutWt} 沒重量)</span>` : ''}</div>
             <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
-            <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
-          <div>Step 5c 自動放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(strict+GroupA &lt; 3 時啟用)</span></div>
+            <div>Step 5b Group A 通過 (per-fiber)：<b>${diag.groupAPass}</b></div>
+          <div>Step 5b' Group A 通過 (合併)：<b>${diag.groupAUnifiedPass||0}</b> <span style="color:var(--t3)">(總和對應、容許不同分布)</span></div>
+          <div>Step 5c 重量放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(重量砍光時才啟用)</span></div>
           </div>` : ''}
           <div style="margin-top:10px;color:var(--t2);font-size:.85em">
             ${diag && diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT_Public.xlsx / WOVEN_Public.xlsx' :
@@ -2628,7 +2652,7 @@ function renderSubSelect(p, rowIdx){
             <div class="rd">${escapeHtml(displayRd(c.fab.rd))} ${brandChips(c.fab.originBrand)}</div>
             <div class="info">
               <div><b>${escapeHtml(c.fab.sub||'')}</b> · ${escapeHtml(c.fab.composition||'')} · ${escapeHtml(c.fab.weight||'')} · ${escapeHtml(c.fab.width||'')}</div>
-              <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(c.fab.supplier||'')}${c.approximate?' · <span style="color:var(--or);font-weight:600">⚠ 比例不符、僅 family+重量符合</span>':c.groupA?' · ⚠ Group A 替代':''}${c.weightRelaxed?' · ⚠ 重量 ±20% 放寬':''}</div>
+              <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(c.fab.supplier||'')}${c.approximate?' · <span style="color:var(--or);font-weight:600">⚠ 重量範圍放寬</span>':c.groupA?' · ⚠ Group A 替代':''}${c.weightRelaxed?' · ⚠ 重量 ±20% 放寬':''}</div>
             </div>
           </label>`;
         }).join('')
