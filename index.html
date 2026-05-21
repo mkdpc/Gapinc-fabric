@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.32',
+  VERSION: '5.0.34',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -851,7 +851,7 @@ function determineStatus(parsedFab){
 //   6. Chemical Finish +10   6b. Mechanical Finish +10
 // ============================================================
 const GROUP_A_FIBERS = ['COTTON', 'POLYESTER', 'RAYON', 'VISCOSE']; // Rayon = Viscose
-const SP_KEYWORDS = /\b(SPANDEX|ELASTANE|LYCRA|ELASTIC|EL\b|SP\b)|彈性/i;
+const SP_KEYWORDS = /\b(SPANDEX|ELASTANE|LYCRA|ELASTIC|SPAN|EL|SP)\b|彈性/i;
 
 function detectSpandex(f){
   if(f && typeof f._spandexOverride === 'boolean') return f._spandexOverride;
@@ -908,8 +908,9 @@ function normalizeFiber(name){
     'NYLON':'NYLON','WOOL':'WOOL','LINEN':'LINEN','LYOCELL':'LYOCELL',
     'MODAL':'MODAL','ACRYLIC':'ACRYLIC','SILK':'SILK','HEMP':'HEMP','METALLIC':'METALLIC',
     'VISCOSE':'RAYON','BCI':'COTTON','PIMA':'COTTON','SUPIMA':'COTTON',
-    'EL':'SPANDEX','SP':'SPANDEX','LYCRA':'SPANDEX','ELASTANE':'SPANDEX','ELASTIC':'SPANDEX',
-    'POLY':'POLYESTER','PA':'NYLON','POLYAMIDE':'NYLON','TENCEL':'LYOCELL'
+    'EL':'SPANDEX','SP':'SPANDEX','SPAN':'SPANDEX','SPX':'SPANDEX','LYCRA':'SPANDEX','ELASTANE':'SPANDEX','ELASTIC':'SPANDEX',
+    'POLY':'POLYESTER','PES':'POLYESTER','PET':'POLYESTER','PA':'NYLON','POLYAMIDE':'NYLON','TENCEL':'LYOCELL',
+    'RAY':'RAYON','COT':'COTTON','CO':'COTTON'
   };
   // 逐個 word 看哪個是已知 fiber（這樣 "US Cotton" 會找到 Cotton、"Modal Lenzing TENCEL" 會找到 Modal）
   const words = cleaned.split(/\s+/).filter(Boolean);
@@ -1086,6 +1087,14 @@ function findCandidates(parsedFab, limit=50){
   diag.strictPass = strictPass.length;
   diag.groupAPass = groupAPass.length;
 
+  // === Step 5c: 自動放寬 — 當 strict+GroupA < 3 個、補入 Step 4 候選（同 family + 同重量、不管成分）===
+  let approxPass = [];
+  if(queryFibers.length > 0 && strictPass.length + groupAPass.length < 3){
+    const usedRds = new Set([...strictPass, ...groupAPass].map(c => c.rd));
+    approxPass = pool.filter(c => !usedRds.has(c.rd));
+  }
+  diag.approxPass = approxPass.length;
+
   // === Step 6: Finish (sort only, not filter) ===
   // hasFinish = chemFinish 或 mechFinish 有非空、非 Normal/Blank 值
   function hasFinish(c){
@@ -1094,29 +1103,32 @@ function findCandidates(parsedFab, limit=50){
   }
 
   // 包成 result objects
-  const wrapResult = (c, groupA) => ({
+  const wrapResult = (c, groupA, approximate) => ({
     fab: c,
     groupA,
+    approximate: !!approximate,
     weightRelaxed,
     subRank: subRankFn(c),
     weightDiff: queryWt ? Math.abs((numFromStr(c.weight)||0) - queryWt) / queryWt : 0,
     hasFinish: hasFinish(c)
   });
 
-  // 通用排序：strict 優先 > subRank ASC > weight 差距 ASC > 沒 finish 優先
+  // 通用排序：strict 優先 > GroupA > approximate > subRank ASC > weight 差距 ASC > 沒 finish 優先
   const sortFn = (a, b) => {
-    // groupA 後排
+    // approximate 最後排
+    if(a.approximate !== b.approximate) return a.approximate ? 1 : -1;
+    // groupA 次後排
     if(a.groupA !== b.groupA) return a.groupA ? 1 : -1;
     if(a.subRank !== b.subRank) return a.subRank - b.subRank;
     if(a.weightDiff !== b.weightDiff) return a.weightDiff - b.weightDiff;
-    // 沒 finish 排前面（你說「盡可能不要有的」）
     if(a.hasFinish !== b.hasFinish) return a.hasFinish ? 1 : -1;
     return 0;
   };
 
   const results = [
-    ...strictPass.map(c => wrapResult(c, false)),
-    ...groupAPass.map(c => wrapResult(c, true))
+    ...strictPass.map(c => wrapResult(c, false, false)),
+    ...groupAPass.map(c => wrapResult(c, true, false)),
+    ...approxPass.map(c => wrapResult(c, false, true))
   ];
   results.sort(sortFn);
 
@@ -2114,6 +2126,7 @@ function renderRecommendEmpty(query, parsedFab, diag){
           <div>Step 4 Weight ±15% 過濾後：<b>${diag.afterWeight || diag.afterSpandex}</b> ${!parsedFab.weight?'<span style="color:var(--t3)">(query 沒重量，沒篩)</span>':''}</div>
           <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
           <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
+          <div>Step 5c 自動放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(strict+GroupA &lt; 3 時啟用)</span></div>
         </div>
         <div style="margin-top:10px;color:var(--t2);font-size:.85em">
           ${diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT/WOVEN 公檔' :
@@ -2163,7 +2176,9 @@ function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, quer
         const inUse = usedRds.has(f.rd);
         const diff = describeCandidateDiff(parsedFab, f, c.groupA, c.weightRelaxed);
         const badges = [];
-        if(c.groupA) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">Group A</span>');
+        if(c.approximate) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">⚠ 比例不符</span>');
+        else if(c.groupA) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">Group A</span>');
+        const adoptBtn = isAdmin() ? `<button class="btn s sm" data-adopt-sub="${escapeHtml(f.rd)}" style="white-space:nowrap" title="採用為代用、設定款號跟客人原始 RD">💾 採用為代用</button>` : '';
         return `<div class="multi-row" data-view-rd="${escapeHtml(f.rd)}">
           <div class="mr-marker"><span style="font-weight:700;color:var(--ac)">${idx+1}</span></div>
           <div class="mr-rd"><b>${escapeHtml(displayRd(f.rd))}</b> ${brandChips(f.originBrand)}${badges.length?'<div style="margin-top:3px">'+badges.join(' ')+'</div>':''}</div>
@@ -2175,7 +2190,7 @@ function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, quer
             <div><b>${escapeHtml(f.sub||'—')}</b> · ${escapeHtml(f.composition||'—')}</div>
             <div style="color:var(--t3);font-size:.82em;margin-top:2px">${escapeHtml(f.weight||'—')} · ${escapeHtml(f.width||'—')} · ${escapeHtml(f.supplier||'—')}${diff?' · '+escapeHtml(diff):''}</div>
           </div>
-          <div class="mr-arrow">→</div>
+          <div class="mr-arrow">${adoptBtn || '→'}</div>
         </div>`;
       }).join('')}
     </div>
@@ -2568,6 +2583,7 @@ function renderSubSelect(p, rowIdx){
             <div>Step 4 Weight ±15% 過濾後：<b>${diag.afterWeight || diag.afterSpandex}</b> ${!recFab.weight?'<span style="color:var(--t3)">(query 沒重量，沒篩)</span>':''}</div>
             <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
             <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
+          <div>Step 5c 自動放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(strict+GroupA &lt; 3 時啟用)</span></div>
           </div>` : ''}
           <div style="margin-top:10px;color:var(--t2);font-size:.85em">
             ${diag && diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT_Public.xlsx / WOVEN_Public.xlsx' :
@@ -2586,7 +2602,7 @@ function renderSubSelect(p, rowIdx){
             <div class="rd">${escapeHtml(displayRd(c.fab.rd))} ${brandChips(c.fab.originBrand)}</div>
             <div class="info">
               <div><b>${escapeHtml(c.fab.sub||'')}</b> · ${escapeHtml(c.fab.composition||'')} · ${escapeHtml(c.fab.weight||'')} · ${escapeHtml(c.fab.width||'')}</div>
-              <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(c.fab.supplier||'')}${c.groupA?' · ⚠ Group A 替代':''}${c.weightRelaxed?' · ⚠ 重量 ±20% 放寬':''}</div>
+              <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(c.fab.supplier||'')}${c.approximate?' · <span style="color:var(--or);font-weight:600">⚠ 比例不符、僅 family+重量符合</span>':c.groupA?' · ⚠ Group A 替代':''}${c.weightRelaxed?' · ⚠ 重量 ±20% 放寬':''}</div>
             </div>
           </label>`;
         }).join('')
@@ -3843,6 +3859,10 @@ function showImportConfirm({ fileName, fabricType, parsed, colsDetected, sampleF
 function attachResultHandlers(){
   document.querySelectorAll('[data-clear]').forEach(b => b.onclick = () => { State.search.result = null; render(); });
   attachRefineHandlers();
+  document.querySelectorAll('[data-adopt-sub]').forEach(b => b.onclick = e => {
+    e.stopPropagation();  // 不要觸發 row click 跳到 RD detail
+    openAdoptAsSubstitute(b.dataset.adoptSub);
+  });
   document.querySelectorAll('[data-recent]').forEach(b => b.onclick = () => { document.getElementById('qbox').value = b.dataset.recent; doSearch(); });
   document.querySelectorAll('[data-view-rd]').forEach(el => el.onclick = e => {
     e.preventDefault();
@@ -4089,6 +4109,123 @@ function openEditMainFab(styleKey){
   };
 }
 
+function openAdoptAsSubstitute(candRd){
+  if(!isAdmin()){ toast('只有負責人能採用','or'); return; }
+  const cand = Store.get('fabric:'+candRd);
+  if(!cand){ toast('找不到這塊布','or'); return; }
+  const query = (State.search.result && State.search.result.query) || '';
+  // 從 query 試抓 RD 預填客人原始 RD
+  const rdMatch = query.match(/RD#?\s*(\d{3,})/i);
+  const prefillOrig = rdMatch ? 'RD' + rdMatch[1] : '';
+  const root = document.getElementById('modal-root');
+  root.innerHTML = `
+    <div class="modal-bg" id="ad-bg">
+      <div class="modal" style="max-width:580px">
+        <h3>💾 採用 ${escapeHtml(displayRd(candRd))} 為代用</h3>
+        <div class="body-x">
+          <div style="font-size:.85em;color:var(--t2);margin-bottom:14px;line-height:1.5;background:var(--cd);padding:8px 12px;border-radius:5px">
+            <b>你查的條件：</b><br>${escapeHtml(query)}
+          </div>
+          <label style="font-size:.85em;font-weight:600;display:block;margin-bottom:4px">要採用到哪個款號 <span style="color:var(--rd)">*</span></label>
+          <input type="text" id="ad-style" class="ta" placeholder="例：D104877 或 D104877_876050" autocomplete="off">
+          <div id="ad-check" style="font-size:.82em;margin-top:5px;min-height:20px"></div>
+          <label style="font-size:.85em;font-weight:600;display:block;margin:14px 0 4px">客人指定的原始 RD（沒就空著、不會驗證公檔）</label>
+          <input type="text" id="ad-orig" class="ta" style="font-family:Consolas,monospace" placeholder="例：1064466" value="${escapeHtml(prefillOrig)}">
+          <label style="font-size:.85em;font-weight:600;display:block;margin:14px 0 6px">採用為</label>
+          <div style="display:flex;gap:18px;align-items:center">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="radio" name="ad-role" value="main" checked> ⭐ 主布
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer" id="ad-acc-lbl">
+              <input type="radio" name="ad-role" value="acc"> 🎨 配布
+            </label>
+            <span id="ad-acc-hint" style="font-size:.78em;color:var(--t3)"></span>
+          </div>
+        </div>
+        <div class="modal-acts">
+          <button class="btn s" id="ad-cancel">取消</button>
+          <button class="btn gn" id="ad-ok" disabled>✓ 採用並產生 comment</button>
+        </div>
+      </div>
+    </div>`;
+  const styleInp = document.getElementById('ad-style');
+  const origInp = document.getElementById('ad-orig');
+  const check = document.getElementById('ad-check');
+  const okBtn = document.getElementById('ad-ok');
+  const accRadio = document.querySelector('input[name="ad-role"][value="acc"]');
+  const accLbl = document.getElementById('ad-acc-lbl');
+  const accHint = document.getElementById('ad-acc-hint');
+  let existingStyle = null;
+  const updateCheck = () => {
+    const key = styleInp.value.trim();
+    existingStyle = null;
+    if(!key){
+      check.innerHTML = '';
+      accRadio.disabled = true;
+      accLbl.style.opacity = '0.5';
+      accHint.textContent = '';
+      okBtn.disabled = true;
+      return;
+    }
+    existingStyle = Store.get('style:'+key);
+    if(existingStyle){
+      const mainRd = existingStyle.mainFabric && existingStyle.mainFabric.rd ? displayRd(existingStyle.mainFabric.rd) : '(無主布)';
+      const accCount = (existingStyle.accessories||[]).length;
+      check.innerHTML = `<span style="color:var(--gn)">✓ 找到這款 — 主布 <b>${escapeHtml(mainRd)}</b> · ${accCount} 個配布</span>`;
+      accRadio.disabled = false;
+      accLbl.style.opacity = '1';
+      accHint.textContent = '';
+    } else {
+      check.innerHTML = `<span style="color:var(--or)">⚠ 還沒這款、選「主布」會建立新款</span>`;
+      accRadio.disabled = true;
+      accLbl.style.opacity = '0.5';
+      accHint.textContent = '(找不到這款)';
+      if(accRadio.checked) document.querySelector('input[name="ad-role"][value="main"]').checked = true;
+    }
+    okBtn.disabled = false;
+  };
+  styleInp.oninput = updateCheck;
+  setTimeout(() => styleInp.focus(), 50);
+  document.getElementById('ad-cancel').onclick = () => root.innerHTML = '';
+  document.getElementById('ad-bg').onclick = e => { if(e.target.id === 'ad-bg') root.innerHTML = ''; };
+  okBtn.onclick = () => {
+    const styleKey = styleInp.value.trim();
+    if(!styleKey){ toast('款號是必填','or'); return; }
+    const origRdRaw = origInp.value.trim();
+    const origRd = origRdRaw ? normalizeRD(origRdRaw) : '';
+    const role = document.querySelector('input[name="ad-role"]:checked').value;
+    if(role === 'main'){
+      const p = {
+        styleKey,
+        style: styleKey.split('_')[0],
+        bom: styleKey.includes('_') ? styleKey.split('_').slice(1).join('_') : '',
+        season: '', category: ''
+      };
+      const mainFab = { rd: candRd, label: '', originalRd: origRd || undefined };
+      const accessories = existingStyle ? (existingStyle.accessories || []) : [];
+      saveStyleFromExcel(p, mainFab, accessories, origRd ? { kind:'substitute', originalRd:origRd } : {});
+    } else {
+      if(!existingStyle){ toast('找不到這款、無法加配布','or'); return; }
+      existingStyle.accessories = existingStyle.accessories || [];
+      existingStyle.accessories.push({
+        rd: candRd, label:'配布',
+        originalRd: origRd || undefined
+      });
+      Store.set('style:'+styleKey, existingStyle);
+      if(origRd){
+        addHistory({ action:'commit_substitute', style:styleKey, rd:candRd, original:origRd, source:'search', actor:State.user.name });
+      } else {
+        addHistory({ action:'add_accessory', style:styleKey, rd:candRd, label:'配布', source:'search', actor:State.user.name });
+      }
+    }
+    root.innerHTML = '';
+    copyCommentForStyle(styleKey, true);
+    toast('✓ 已採用、comment 已複製','gn');
+    State.search.result = { kind:'style', style:Store.get('style:'+styleKey), key:styleKey };
+    render();
+  };
+}
+
 function setAsMainOrAcc(rd, mode){
   const styleKey = prompt(`要把 ${rd} 設為「${mode==='main'?'主布':'配布'}」到哪個款？輸入完整 key (例如 D102978_BOM871681)：`);
   if(!styleKey) return;
@@ -4252,4 +4389,3 @@ window.GISFDT = { CONFIG, BRANDS, Store, State, CloudSync, render, performSearch
 </script>
 </body>
 </html>
-
