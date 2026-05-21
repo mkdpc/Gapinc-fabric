@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.34',
+  VERSION: '5.0.36',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1046,6 +1046,8 @@ function findCandidates(parsedFab, limit=50){
 
   // === Step 4: Weight ±15%，0 結果才放寬到 ±20% ===
   let weightRelaxed = false;
+  let weightKilledAll = false;
+  const poolBeforeWeight = pool.slice();  // 保留 Step 3 結果、Step 5c 救命用
   const queryWt = numFromStr(parsedFab.weight);
   if(queryWt && queryWt > 0){
     const filter15 = pool.filter(c => {
@@ -1063,7 +1065,17 @@ function findCandidates(parsedFab, limit=50){
         return Math.abs(cw - queryWt) / queryWt <= 0.20;
       });
       if(pool.length > 0) weightRelaxed = true;
-      // ±20% 還 0 就是真的找不到，pool = []
+      else weightKilledAll = true;
+    }
+    // diag：重量資料完整度
+    const withWt = poolBeforeWeight.filter(c => numFromStr(c.weight));
+    const withoutWt = poolBeforeWeight.length - withWt.length;
+    diag.weightStats = { withWt: withWt.length, withoutWt };
+    // 重量壞光的時候、抓一些樣本給 user 看
+    if(weightKilledAll){
+      diag.weightSamples = poolBeforeWeight.slice(0, 10).map(c => ({
+        rd: c.rd, weight: c.weight || '(空)', sub: c.sub
+      }));
     }
   }
   diag.afterWeight = pool.length;
@@ -1087,11 +1099,25 @@ function findCandidates(parsedFab, limit=50){
   diag.strictPass = strictPass.length;
   diag.groupAPass = groupAPass.length;
 
-  // === Step 5c: 自動放寬 — 當 strict+GroupA < 3 個、補入 Step 4 候選（同 family + 同重量、不管成分）===
+  // === Step 5c: 自動放寬 — 當 strict+GroupA < 3 個、補入候選 ===
   let approxPass = [];
-  if(queryFibers.length > 0 && strictPass.length + groupAPass.length < 3){
-    const usedRds = new Set([...strictPass, ...groupAPass].map(c => c.rd));
-    approxPass = pool.filter(c => !usedRds.has(c.rd));
+  if(strictPass.length + groupAPass.length < 3){
+    if(weightKilledAll && poolBeforeWeight.length > 0){
+      // Step 4 砍光的話、退回 Step 3 pool、用更寬的 ±30% weight 範圍篩
+      if(queryWt && queryWt > 0){
+        approxPass = poolBeforeWeight.filter(c => {
+          const cw = numFromStr(c.weight);
+          if(!cw) return false;  // 沒重量資料的不算
+          return Math.abs(cw - queryWt) / queryWt <= 0.30;
+        });
+      } else {
+        approxPass = poolBeforeWeight.slice();
+      }
+    } else if(queryFibers.length > 0 && pool.length > 0){
+      // 一般 case：成分擋掉、放寬看 Step 4 通過的
+      const usedRds = new Set([...strictPass, ...groupAPass].map(c => c.rd));
+      approxPass = pool.filter(c => !usedRds.has(c.rd));
+    }
   }
   diag.approxPass = approxPass.length;
 
@@ -1208,8 +1234,8 @@ const LIB_COLUMN_HINTS = {
   rd:          [/^rd$/i, /^rd\s*#/i, /^rd\s*no/i, /^rd\s*number/i, /^material\s*(number|code|no)/i, /^code$/i, /^id$/i, /^編號/, /^料號/],
   sub:         [/^sub.*type/i, /^material\s*subtype/i, /^construction/i, /^material\s*name/i, /^fabric\s*name/i, /^name$/i, /^description/i, /^子類/, /^布種/, /^名稱/],
   composition: [/^composition/i, /^content/i, /^fiber/i, /^成分/, /^組成/, /^quality\s*details/i],
-  weight:      [/^weight/i, /^gsm/i, /^g\s*\/\s*m/i, /^克重/, /^重量/, /^bw$/i, /^before\s*wash\s*weight/i],
-  width:       [/^width/i, /^cw$/i, /^cuttable/i, /^寬幅/, /^幅寬/, /^可裁幅/],
+  weight:      [/^before\s*wash\s*weight/i, /^bw$/i, /^weight\s*$/i, /^gsm\s*$/i, /^g\s*\/\s*m/i, /^克重/, /^重量/],
+  width:       [/^cuttable\s*width/i, /^width\s*$/i, /^cw$/i, /^cuttable/i, /^寬幅/, /^幅寬/, /^可裁幅/],
   shrinkage:   [/shrink/i, /縮率/, /縮水/],
   supplier:    [/^supplier/i, /^vendor/i, /^factory/i, /^mill/i, /^source/i, /^廠商/, /^供應商/],
   season:      [/^season/i, /^季別/, /^季/, /^date/i, /^年份/],
@@ -2122,8 +2148,8 @@ function renderRecommendEmpty(query, parsedFab, diag){
           <div>公檔總數：<b>${diag.total}</b> 塊布</div>
           <div>Step 1 Type 過濾後：<b>${diag.afterType}</b></div>
           <div>Step 2 Spandex 過濾後：<b>${diag.afterSpandex}</b></div>
-          <div>Step 3 Subtype 過濾後：<b>${diag.afterSub || diag.afterSpandex}</b> ${!parsedFab.sub?'<span style="color:var(--t3)">(query 沒 subtype，沒篩)</span>':''}</div>
-          <div>Step 4 Weight ±15% 過濾後：<b>${diag.afterWeight || diag.afterSpandex}</b> ${!parsedFab.weight?'<span style="color:var(--t3)">(query 沒重量，沒篩)</span>':''}</div>
+          <div>Step 3 Subtype 過濾後：<b>${parsedFab.sub ? diag.afterSub : (diag.afterSpandex+' (query 沒 subtype 沒篩)')}</b></div>
+          <div>Step 4 Weight ±15% 過濾後：<b>${parsedFab.weight ? diag.afterWeight : (diag.afterSub+' (query 沒重量 沒篩)')}</b>${diag.weightStats && parsedFab.weight ? ` <span style="color:var(--t3)">(${diag.weightStats.withWt} 有重量、${diag.weightStats.withoutWt} 沒重量)</span>` : ''}</div>
           <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
           <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
           <div>Step 5c 自動放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(strict+GroupA &lt; 3 時啟用)</span></div>
@@ -2132,7 +2158,7 @@ function renderRecommendEmpty(query, parsedFab, diag){
           ${diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT/WOVEN 公檔' :
             diag.afterSpandex === 0 ? `⚠ 含/不含彈性的條件擋掉全部 — 偵測為 ${detectSpandex(parsedFab)?'含彈性':'不含彈性'}` :
             diag.afterSub === 0 ? `⚠ Subtype 條件擋掉全部 — 公檔沒有同 family (${escapeHtml(parsedFab.sub||'?')}) 的布料` :
-            diag.afterWeight === 0 ? '⚠ 重量條件擋掉全部 — 沒有公檔在 ±20% 範圍內' :
+            diag.afterWeight === 0 ? `⚠ 重量條件擋掉全部 — 沒有公檔在 ±20% 範圍內<br>公檔重量分布（取樣前 10 個）：<br><span style="font-family:Consolas,monospace;font-size:.85em">${(diag.weightSamples||[]).map(s => `${escapeHtml(displayRd(s.rd))}=${escapeHtml(String(s.weight))}`).join(' · ')}</span>` :
             diag.strictPass + diag.groupAPass === 0 ? '⚠ 成分條件擋掉全部 — 改下面條件再試' :
             ''}
         </div>
@@ -2579,8 +2605,8 @@ function renderSubSelect(p, rowIdx){
             <div>公檔總數：<b>${diag.total}</b> 塊布</div>
             <div>Step 1 Type 過濾後：<b>${diag.afterType}</b></div>
             <div>Step 2 Spandex 過濾後：<b>${diag.afterSpandex}</b></div>
-            <div>Step 3 Subtype 過濾後：<b>${diag.afterSub || diag.afterSpandex}</b> ${!recFab.sub?'<span style="color:var(--t3)">(query 沒 subtype，沒篩)</span>':''}</div>
-            <div>Step 4 Weight ±15% 過濾後：<b>${diag.afterWeight || diag.afterSpandex}</b> ${!recFab.weight?'<span style="color:var(--t3)">(query 沒重量，沒篩)</span>':''}</div>
+            <div>Step 3 Subtype 過濾後：<b>${recFab.sub ? diag.afterSub : (diag.afterSpandex+' (沒 subtype 沒篩)')}</b></div>
+            <div>Step 4 Weight ±15% 過濾後：<b>${recFab.weight ? diag.afterWeight : (diag.afterSub+' (沒重量 沒篩)')}</b>${diag.weightStats && recFab.weight ? ` <span style="color:var(--t3)">(${diag.weightStats.withWt} 有重量、${diag.weightStats.withoutWt} 沒重量)</span>` : ''}</div>
             <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
             <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
           <div>Step 5c 自動放寬通過：<b>${diag.approxPass||0}</b> <span style="color:var(--t3)">(strict+GroupA &lt; 3 時啟用)</span></div>
