@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.28',
+  VERSION: '5.0.32',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -640,11 +640,43 @@ function getKnitFamily(subtype){
   if(!subtype) return null;
   const t = subtype.trim();
   if(isRibPattern(t)) return 'Rib';
-  return t.split(/[-–]/)[0].trim();
+  // 用 startsWith 找 family（長到短、優先匹配長的、case insensitive）— 比 split('-')[0] 對各種格式更穩
+  const sorted = [...KNIT_FAMILIES].sort((a, b) => b.length - a.length);
+  for(const fam of sorted){
+    if(t.toLowerCase().startsWith(fam.toLowerCase())) return fam;
+  }
+  // 還是找不到、退回 split('-')[0]
+  return t.split(/[-–—]/)[0].trim();
 }
 function getWovenFamily(subtype){
   if(!subtype) return null;
-  return subtype.trim().split(/[-–]/)[0].trim();
+  const t = subtype.trim();
+  const sorted = [...WOVEN_FAMILIES].sort((a, b) => b.length - a.length);
+  for(const fam of sorted){
+    if(t.toLowerCase().startsWith(fam.toLowerCase())) return fam;
+  }
+  return t.split(/[-–—]/)[0].trim();
+}
+
+// 從一段文字（例 "POWERSOFT - RPET Interlock Piece Dye"）掃出已知的 family
+// 規則：取最長 match；若多個無法歸併的 family 同時出現（例 "Fleece-look Jersey"），回 null 不猜
+function extractSubFromText(text){
+  if(!text) return null;
+  const t = String(text).trim();
+  const all = [...new Set([...KNIT_FAMILIES, ...WOVEN_FAMILIES])].sort((a,b) => b.length - a.length);
+  const found = [];
+  for(const fam of all){
+    const esc = fam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('\\b' + esc + '\\b', 'i');
+    if(re.test(t)){
+      // 若已有更長的 match 涵蓋這個 family、跳過（避免 "Single Jersey" 又加 "Jersey"）
+      if(!found.some(f => f.toLowerCase().includes(fam.toLowerCase()))){
+        found.push(fam);
+      }
+    }
+  }
+  if(found.length === 1) return found[0];
+  return null;  // 0 個或 2+ 個歧義都回 null
 }
 function getKnitSynonymGroup(family){
   if(!family) return null;
@@ -822,6 +854,7 @@ const GROUP_A_FIBERS = ['COTTON', 'POLYESTER', 'RAYON', 'VISCOSE']; // Rayon = V
 const SP_KEYWORDS = /\b(SPANDEX|ELASTANE|LYCRA|ELASTIC|EL\b|SP\b)|彈性/i;
 
 function detectSpandex(f){
+  if(f && typeof f._spandexOverride === 'boolean') return f._spandexOverride;
   if(typeof f.spandex === 'boolean') return f.spandex;
   if(f.composition && SP_KEYWORDS.test(f.composition)) return true;
   return false;
@@ -1117,27 +1150,38 @@ function numFromStr(s){
 }
 
 const COLUMN_HINTS = {
-  style:   [/dev\.?\s*style/i, /style\s*#/i, /^style$/i, /^design$/i, /款號/],
-  bom:     [/bom\s*#/i, /^bom$/i, /bom\s*number/i],
-  mainMat: [/^主料/, /^主布/, /main\s*fabric/i, /primary\s*fabric/i, /shell/i, /^fabric$/i, /^body\s*fabric$/i],
-  subMat:  [/^副料/, /trims?/i, /accessories?/i],
-  season:  [/season/i, /季別/],
-  customer:[/customer/i, /brand/i, /客戶/, /品牌/],
-  category:[/category/i, /class/i, /類別/, /分類/]
+  style:       [/dev\.?\s*style/i, /^design\s*(number|#|no)/i, /style\s*#/i, /^style$/i, /^design$/i, /^d\s*#$/i, /款號/],
+  bom:         [/^bom\s*number/i, /bom\s*#/i, /^bom$/i],
+  rd:          [/bom\s*primary\s*rd\s*number/i, /^rd\s*(number|#|no)/i, /^rd$/i, /material\s*code/i],
+  sub:         [/^subtype/i, /material\s*subtype/i, /rd\s*name/i, /material\s*brief\s*description/i, /^description/i, /^布種/, /^類別/],
+  composition: [/^composition/i, /^content$/i, /^fiber/i, /^成分/, /^組成/],
+  mainMat:     [/^主料/, /^主布/, /main\s*fabric/i, /primary\s*fabric/i, /shell/i, /^fabric$/i, /^body\s*fabric$/i]
 };
 function detectHeaderAndCols(rows){
   let best = { score:0, headerIdx:0, cols:{} };
   for(let i = 0; i < Math.min(5, rows.length); i++){
     const row = rows[i] || [];
+    if(!row.some(v => v && String(v).trim())) continue;
     const cols = {};
+    const usedCols = new Set();
     let score = 0;
-    for(let c = 0; c < row.length; c++){
-      const v = String(row[c]||'').trim();
-      if(!v) continue;
-      for(const [key, patterns] of Object.entries(COLUMN_HINTS)){
-        if(patterns.some(p => p.test(v))){
-          if(!cols[key]){ cols[key] = c; score++; }
+    // Hint-first 順序、避免「Material Name」這種寬鬆 pattern 搶到優先位
+    for(const [key, patterns] of Object.entries(COLUMN_HINTS)){
+      let found = false;
+      for(const pat of patterns){
+        for(let c = 0; c < row.length; c++){
+          if(usedCols.has(c)) continue;
+          const v = String(row[c]||'').trim();
+          if(!v) continue;
+          if(pat.test(v)){
+            cols[key] = c;
+            usedCols.add(c);
+            score++;
+            found = true;
+            break;
+          }
         }
+        if(found) break;
       }
     }
     if(score > best.score) best = { score, headerIdx:i, cols };
@@ -1168,15 +1212,28 @@ function detectLibraryHeader(rows){
   let best = { score:0, headerIdx:0, cols:{} };
   for(let i = 0; i < Math.min(15, rows.length); i++){
     const row = rows[i] || [];
+    if(!row.some(v => v && String(v).trim())) continue;
     const cols = {};
+    const usedCols = new Set();
     let score = 0;
-    for(let c = 0; c < row.length; c++){
-      const v = String(row[c]||'').trim();
-      if(!v) continue;
-      for(const [key, patterns] of Object.entries(LIB_COLUMN_HINTS)){
-        if(patterns.some(p => p.test(v))){
-          if(cols[key] === undefined){ cols[key] = c; score++; }
+    // Hint-first iteration：每個 hint 按 pattern 優先序找、嚴格的 pattern 先試
+    // 例如 sub 的 /material\s*subtype/ 比 /material\s*name/ 先試、就不會被 Name 搶
+    for(const [key, patterns] of Object.entries(LIB_COLUMN_HINTS)){
+      let found = false;
+      for(const pat of patterns){
+        for(let c = 0; c < row.length; c++){
+          if(usedCols.has(c)) continue;
+          const v = String(row[c]||'').trim();
+          if(!v) continue;
+          if(pat.test(v)){
+            cols[key] = c;
+            usedCols.add(c);
+            score++;
+            found = true;
+            break;
+          }
         }
+        if(found) break;
       }
     }
     if(score > best.score) best = { score, headerIdx:i, cols };
@@ -1192,6 +1249,12 @@ function normalizeRD(s){
   }
   if(/^\d+$/.test(t)) return 'RD#' + t;
   return t;
+}
+
+// 內部存 RD#1059005、給 UI 顯示時去掉 # → "RD1059005"
+function displayRd(rd){
+  if(!rd) return '';
+  return String(rd).replace(/^RD#/i, 'RD');
 }
 
 function normalizeWeight(s){
@@ -1238,6 +1301,19 @@ function deriveBrand(brandCell, defaultBrand){
   return defaultBrand;
 }
 
+// 公檔 Originating Brands → 一排品牌色塊（一個 RD 可能屬於多個品牌）
+function brandChips(originBrand){
+  if(!originBrand) return '';
+  const brands = String(originBrand).split(/[,，;]/).map(b => b.trim()).filter(Boolean);
+  return brands.map(b => {
+    const key = deriveBrand(b, null);
+    const bd = key && BRANDS[key];
+    const color = bd ? bd.color : '#9ca3af';
+    const label = bd ? bd.name : b;
+    return `<span style="background:${color};color:#fff;padding:1px 6px;border-radius:3px;font-size:.7em;font-weight:600;margin-right:3px;display:inline-block;line-height:1.4">${escapeHtml(label)}</span>`;
+  }).join('');
+}
+
 function parseLibraryExcel(file, fabricType){
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1264,6 +1340,7 @@ function parseLibraryExcel(file, fabricType){
           fabrics.push({
             rd,
             brand: null,  // 所有品牌共用，不指定 brand
+            originBrand: get('brand'),  // 公檔 Originating Brands 欄、info only
             type: fabricType,
             sub: get('sub'),
             composition: get('composition'),
@@ -1546,6 +1623,7 @@ function renderSearchTab(){
     else if(r.kind === 'rd')         resultUI = renderRdResult(r.rd, r.fabric);
     else if(r.kind === 'multi')      resultUI = renderMultiFabricResult(r.query, r.matches, r.totalCount);
     else if(r.kind === 'recommend')   resultUI = renderRecommendResult(r.query, r.parsedFab, r.candidates, r.weightRelaxed, r.queryType);
+    else if(r.kind === 'recommendEmpty') resultUI = renderRecommendEmpty(r.query, r.parsedFab, r.diag);
     else if(r.kind === 'disambiguate') resultUI = renderDisambiguateResult(r.query, r.parsedFab, r.subtype);
     else if(r.kind === 'multiStyle') resultUI = renderMultiStyleResult(r.query, r.matches);
     else if(r.kind === 'notfound')   resultUI = renderNotFound(r.query);
@@ -1713,6 +1791,8 @@ function performSearch(qRaw){
         if(result.candidates.length > 0){
           return { kind:'recommend', query:qRaw, parsedFab:pf, candidates:result.candidates, weightRelaxed:result.weightRelaxed, queryType:result.queryType };
         }
+        // 有解析出規格、但 0 候選 — 顯示 diagnostic + 細化表單
+        return { kind:'recommendEmpty', query:qRaw, parsedFab:pf, diag:result.diag };
       }
     }
   }
@@ -1787,8 +1867,8 @@ function renderStyleResult(s, key){
             <span class="role">${substituteOriginal?'🔄 採用代用主布':'⭐ 主布'} ${s.mainFabric.label ? `(${escapeHtml(s.mainFabric.label)})` : ''}</span>
             <span class="sbadge ${substituteOriginal?'rec':'act'}">${substituteOriginal?'代用':'✓ actual'}</span>
           </div>
-          ${substituteOriginal?`<div style="font-size:.82em;color:var(--or);margin-bottom:6px">原指定 ${escapeHtml(substituteOriginal)} → 採用 ↓</div>`:''}
-          <div class="rd-line">${escapeHtml(main.rd)}</div>
+          ${substituteOriginal?`<div style="font-size:.82em;color:var(--or);margin-bottom:6px">原指定 ${escapeHtml(displayRd(substituteOriginal))} → 採用 ↓</div>`:''}
+          <div class="rd-line">${escapeHtml(displayRd(main.rd))} ${brandChips(main.originBrand)}</div>
           <div class="name">${escapeHtml(main.sub||'')} · ${escapeHtml(main.type||'')}</div>
           <div class="props">
             <b>Composition:</b> ${escapeHtml(main.composition||'—')}<br>
@@ -1799,6 +1879,7 @@ function renderStyleResult(s, key){
             <button class="btn" data-copy-comment="${escapeHtml(key)}">📋 複製 Comment</button>
             <button class="btn s" data-view-rd="${escapeHtml(main.rd)}">看完整資料</button>
             ${isAdmin()?`<button class="btn s sm" data-edit-main-fab="${escapeHtml(key)}" title="工單改布料時用">✏️ 改主布</button>`:''}
+            ${isAdmin()?`<button class="btn s sm" data-delete-style="${escapeHtml(key)}" style="background:rgba(193,52,40,.08);border-color:var(--rd);color:var(--rd)" title="刪除這款的採用紀錄（公檔不會動）">🗑 刪除採用</button>`:''}
           </div>
           ${main.notes?`<div style="background:rgba(194,92,32,.06);border-left:3px solid var(--or);padding:8px 12px;margin-top:10px;font-size:.83em;color:#7a4a20;border-radius:5px"><b>📝 備註：</b>${escapeHtml(main.notes)}</div>`:''}
         </div>
@@ -1807,10 +1888,10 @@ function renderStyleResult(s, key){
         <div class="acc-list-title">🎨 配布 (${accFabrics.length} 件)</div>
         ${accFabrics.map(a => {
           const f = a.fab;
-          if(!f) return `<div class="fcard acc small"><div class="ftop"><span class="role">${escapeHtml(a.label||'配布')}</span><span class="sbadge empty">資料缺</span></div><div class="rd-line">${escapeHtml(a.rd)}</div></div>`;
+          if(!f) return `<div class="fcard acc small"><div class="ftop"><span class="role">${escapeHtml(a.label||'配布')}</span><span class="sbadge empty">資料缺</span></div><div class="rd-line">${escapeHtml(displayRd(a.rd))}</div></div>`;
           return `<div class="fcard acc small">
             <div class="ftop"><span class="role">${escapeHtml(a.label||'配布')}</span><span class="sbadge act">✓ actual</span></div>
-            <div class="rd-line"><a href="#" data-view-rd="${escapeHtml(f.rd)}" style="color:inherit;text-decoration:none">${escapeHtml(f.rd)}</a></div>
+            <div class="rd-line"><a href="#" data-view-rd="${escapeHtml(f.rd)}" style="color:inherit;text-decoration:none">${escapeHtml(displayRd(f.rd))}</a> ${brandChips(f.originBrand)}</div>
             <div class="props">${escapeHtml(f.sub||'')} · ${escapeHtml(f.composition||'')} · ${escapeHtml(f.width||'')} · ${escapeHtml(f.weight||'')}</div>
           </div>`;
         }).join('')}
@@ -1834,9 +1915,9 @@ function renderStyleResult(s, key){
 function describeHistory(h){
   const actor = h.actor ? `<b>${escapeHtml(h.actor)}</b>` : '系統';
   switch(h.action){
-    case 'commit_main':       return `${actor} 採用主布 ${escapeHtml(h.rd||'')}`;
-    case 'add_accessory':     return `${actor} 新增配布 ${escapeHtml(h.rd||'')} (${escapeHtml(h.label||'')})`;
-    case 'commit_substitute': return `${actor} 採用代用布 ${escapeHtml(h.rd||'')}（原 ${escapeHtml(h.original||'')}）`;
+    case 'commit_main':       return `${actor} 採用主布 ${escapeHtml(displayRd(h.rd||''))}`;
+    case 'add_accessory':     return `${actor} 新增配布 ${escapeHtml(displayRd(h.rd||''))} (${escapeHtml(h.label||'')})`;
+    case 'commit_substitute': return `${actor} 採用代用布 ${escapeHtml(displayRd(h.rd||''))}（原 ${escapeHtml(displayRd(h.original||''))}）`;
     case 'note_update':       return `${actor} 更新備註`;
     case 'excel_import':      return `${actor} 匯入 Excel：${escapeHtml(h.source||'')}`;
     default:                  return `${actor} ${escapeHtml(h.action)}`;
@@ -1866,14 +1947,15 @@ function renderRdResult(rd, f){
     : '';
   return `
     <div class="q-display-bar">
-      <span class="lab">RD:</span><span class="val">${escapeHtml(rd)}</span>
+      <span class="lab">RD:</span><span class="val">${escapeHtml(displayRd(rd))}</span>
       <button class="clr" data-clear="1">✕ 清除</button>
     </div>
     <div class="rd-detail-grid">
       <div class="rd-detail-card">
         <div class="head">
-          <h3>${escapeHtml(rd)}</h3>
+          <h3>${escapeHtml(displayRd(rd))}</h3>
           ${bb ? `<span class="bbadge ${bb.key}">${bb.name}</span>` : ''}
+          ${f.originBrand ? brandChips(f.originBrand) : ''}
           ${srcBadge}
           ${inUse ? `<span class="sbadge act">🟢 使用中 (${usedIn.length} 款)</span>` : ''}
         </div>
@@ -1956,7 +2038,7 @@ function renderMultiFabricResult(query, matches, totalCount){
         const inUse = usedRds.has(f.rd);
         return `<div class="multi-row" data-view-rd="${escapeHtml(f.rd)}">
           <div class="mr-marker">${inUse?'<span title="使用中" style="font-size:1em">🟢</span>':'<span title="公檔" style="font-size:1em;opacity:.6">🔵</span>'}</div>
-          <div class="mr-rd"><b>${escapeHtml(f.rd)}</b></div>
+          <div class="mr-rd"><b>${escapeHtml(displayRd(f.rd))}</b>${brandChips(f.originBrand)}</div>
           <div class="mr-brand"><span class="cell-cat">${escapeHtml(f.type||'?')}</span></div>
           <div class="mr-info">
             <div><b>${escapeHtml(f.sub||'—')}</b> · ${escapeHtml(f.composition||'—')}</div>
@@ -1989,13 +2071,61 @@ function renderMultiStyleResult(query, matches){
           <div class="mr-brand"><span class="bbadge ${b.key}">${b.name}</span></div>
           <div class="mr-info">
             <div><b>${escapeHtml(s.description||'(無描述)')}</b></div>
-            <div style="color:var(--t3);font-size:.82em;margin-top:2px">${escapeHtml(s.season||'—')} · ${escapeHtml(s.category||'')} · 主布 ${escapeHtml(s.mainFabric?.rd||'未設定')}</div>
+            <div style="color:var(--t3);font-size:.82em;margin-top:2px">${escapeHtml(s.season||'—')} · ${escapeHtml(s.category||'')} · 主布 ${escapeHtml(displayRd(s.mainFabric?.rd||'未設定'))}</div>
           </div>
           <div class="mr-arrow">→</div>
         </div>`;
       }).join('')}
     </div>
   `;
+}
+
+// 單筆查詢解析出規格但 0 候選 — 顯示 diagnostic + 細化表單（重用 modal 的 renderRefineForm 邏輯）
+function renderRecommendEmpty(query, parsedFab, diag){
+  // 把 parsedFab 暫存到 State、讓 refine handler 找得到
+  State.search.pendingRefine = parsedFab;
+  const parsedSummary = [
+    parsedFab.type && `type: ${parsedFab.type}`,
+    parsedFab.sub && `sub: ${parsedFab.sub}`,
+    parsedFab.composition && `成分: ${parsedFab.composition}`,
+    parsedFab.weight && `重量: ${parsedFab.weight}`,
+    parsedFab.width && `寬幅: ${parsedFab.width}`
+  ].filter(Boolean).join(' · ') || '(無解析到的規格)';
+  // 用 1 個假裝的 recFab 餵 renderRefineForm（rowIdx=-1 標示是單筆查詢）
+  const fakeRecFab = { ...parsedFab, rd: parsedFab.rd || 'search' };
+  return `<div class="q-display-bar">
+      <span class="lab">搜尋:</span>
+      <span class="val">${escapeHtml(query)}</span>
+      <span style="color:var(--or);font-size:.88em">→ 沒命中任何候選</span>
+      <button class="clr" data-clear="1">✕ 清除</button>
+    </div>
+    <div style="padding:14px 18px">
+      <div style="background:var(--cd);border:1px solid var(--bd);border-radius:7px;padding:11px 14px;margin-bottom:12px">
+        <div style="font-size:.78em;color:var(--t2);font-weight:600;margin-bottom:4px">系統解析出的條件</div>
+        <div style="font-family:Consolas,monospace;font-size:.86em">${escapeHtml(parsedSummary)}</div>
+      </div>
+      <div style="padding:14px 16px;background:var(--or-soft);border:1px solid var(--or);border-radius:6px;margin-bottom:12px">
+        <div style="color:var(--or);font-weight:700;margin-bottom:8px">沒有相似的候選</div>
+        <div style="font-family:Consolas,monospace;font-size:.82em;color:var(--t2);line-height:1.8">
+          <div>公檔總數：<b>${diag.total}</b> 塊布</div>
+          <div>Step 1 Type 過濾後：<b>${diag.afterType}</b></div>
+          <div>Step 2 Spandex 過濾後：<b>${diag.afterSpandex}</b></div>
+          <div>Step 3 Subtype 過濾後：<b>${diag.afterSub || diag.afterSpandex}</b> ${!parsedFab.sub?'<span style="color:var(--t3)">(query 沒 subtype，沒篩)</span>':''}</div>
+          <div>Step 4 Weight ±15% 過濾後：<b>${diag.afterWeight || diag.afterSpandex}</b> ${!parsedFab.weight?'<span style="color:var(--t3)">(query 沒重量，沒篩)</span>':''}</div>
+          <div>Step 5 Composition strict 通過：<b>${diag.strictPass}</b></div>
+          <div>Step 5b Group A 通過：<b>${diag.groupAPass}</b></div>
+        </div>
+        <div style="margin-top:10px;color:var(--t2);font-size:.85em">
+          ${diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT/WOVEN 公檔' :
+            diag.afterSpandex === 0 ? `⚠ 含/不含彈性的條件擋掉全部 — 偵測為 ${detectSpandex(parsedFab)?'含彈性':'不含彈性'}` :
+            diag.afterSub === 0 ? `⚠ Subtype 條件擋掉全部 — 公檔沒有同 family (${escapeHtml(parsedFab.sub||'?')}) 的布料` :
+            diag.afterWeight === 0 ? '⚠ 重量條件擋掉全部 — 沒有公檔在 ±20% 範圍內' :
+            diag.strictPass + diag.groupAPass === 0 ? '⚠ 成分條件擋掉全部 — 改下面條件再試' :
+            ''}
+        </div>
+      </div>
+      ${renderRefineForm(fakeRecFab, -1)}
+    </div>`;
 }
 
 function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, queryType){
@@ -2036,7 +2166,7 @@ function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, quer
         if(c.groupA) badges.push('<span style="display:inline-block;padding:1px 6px;background:var(--or-soft);color:var(--or);border-radius:4px;font-size:.72em;font-weight:600">Group A</span>');
         return `<div class="multi-row" data-view-rd="${escapeHtml(f.rd)}">
           <div class="mr-marker"><span style="font-weight:700;color:var(--ac)">${idx+1}</span></div>
-          <div class="mr-rd"><b>${escapeHtml(f.rd)}</b>${badges.length?'<div style="margin-top:3px">'+badges.join(' ')+'</div>':''}</div>
+          <div class="mr-rd"><b>${escapeHtml(displayRd(f.rd))}</b> ${brandChips(f.originBrand)}${badges.length?'<div style="margin-top:3px">'+badges.join(' ')+'</div>':''}</div>
           <div class="mr-brand">
             <span class="cell-cat">${escapeHtml(f.type||'?')}</span>
             ${inUse ? '<div style="font-size:.75em;color:var(--gn);margin-top:2px">🟢 使用中</div>' : ''}
@@ -2165,29 +2295,31 @@ function renderColPicker(){
   const cols = State.excel.cols || {};
   if(headers.length === 0) return '';
   const fields = [
-    ['style',    '款號 (Style)',   '必選'],
-    ['bom',      'BOM',            '必選'],
-    ['mainMat',  '主料 (Main)',    '必選 — 解析布料'],
-    ['subMat',   '副料 (Trims)',   '選填'],
-    ['season',   '季別',           '選填'],
-    ['customer', '客戶/品牌',      '選填']
+    ['style',       '款號 (Style)',      '必選'],
+    ['bom',         'BOM',               '必選'],
+    ['rd',          'RD',                '選填'],
+    ['sub',         '布種',              '選填'],
+    ['composition', '成分 (Composition)','選填']
   ];
   const optionsHtml = headers.map((h, i) => {
     const preview = String(h || '').trim().slice(0, 30) || '(空白)';
     return { i, label: `${String.fromCharCode(65+i)}: ${preview}` };
   });
-  const missing = ['style','bom','mainMat'].filter(k => cols[k] === undefined);
+  const missing = ['style','bom'].filter(k => cols[k] === undefined);
+  const hasRdOrMain = cols.rd !== undefined || cols.mainMat !== undefined;
   return `<div style="background:var(--cd);border:1px solid var(--bd);border-radius:9px;padding:13px 16px;margin-bottom:12px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
       <b style="font-size:.95em">📊 欄位對應</b>
       ${missing.length > 0
         ? `<span style="color:var(--or);font-size:.85em">⚠ 缺 ${missing.join(', ')} — 請從下面選</span>`
-        : `<span style="color:var(--gn);font-size:.85em">✓ 已對應，下面可手動調整</span>`}
+        : !hasRdOrMain
+          ? `<span style="color:var(--or);font-size:.85em">⚠ RD 跟主料都沒選 — 至少要選一個才能解析布料</span>`
+          : `<span style="color:var(--gn);font-size:.85em">✓ 已對應，下面可手動調整</span>`}
     </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px 14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px 14px">
       ${fields.map(([k, label, hint]) => {
         const cur = cols[k];
-        const isMust = hint.startsWith('必選');
+        const isMust = hint === '必選';
         const missingMark = isMust && cur === undefined;
         return `<div>
           <div style="font-size:.78em;color:${missingMark?'var(--or)':'var(--t2)'};margin-bottom:3px;font-weight:${missingMark?'700':'500'}">${label} <span style="color:var(--t3);font-weight:400">· ${hint}</span></div>
@@ -2317,9 +2449,12 @@ function renderExcelRow(p, idx){
 function renderFabricLine(f, isMain){
   const roleTag = isMain ? `<span class="role-tag">⭐主</span>` : `<span class="role-tag acc">🎨配</span>`;
   const labelTag = f.role ? `<span class="role-tag label-tag">${escapeHtml(f.role)}</span>` : '';
-  const rdCell = f.rd ? `<span class="rd-cell">${escapeHtml(f.rd)}</span>` : `<span class="rd-cell empty">(RD 空白)</span>`;
-  const descParts = [f.sub, f.composition, f.weight, f.width].filter(Boolean).join(', ');
-  const desc = `<span class="desc">${escapeHtml(descParts) || '<無描述>'}</span>`;
+  const rdCell = f.rd ? `<span class="rd-cell">${escapeHtml(displayRd(f.rd))}</span>${brandChips(f.originBrand)}` : `<span class="rd-cell empty">(RD 空白)</span>`;
+  const subShow = f.sub ? (f._autoSub
+    ? `<span title="從『${escapeHtml(f._autoSubFrom||'')}』自動偵測、可在推薦 modal 改" style="border-bottom:1px dashed var(--or);cursor:help">🤖${escapeHtml(f.sub)}</span>`
+    : escapeHtml(f.sub)) : '';
+  const descParts = [subShow, f.composition, f.weight, f.width].filter(Boolean).join(', ');
+  const desc = `<span class="desc">${descParts || '&lt;無描述&gt;'}</span>`;
   const badge = f.status === 'actual' ? `<span class="sbadge act">✓ actual</span>`
               : f.status === 'recommend' ? `<span class="sbadge rec">⚠ 需推薦</span>`
               : `<span class="sbadge empty">RD 缺</span>`;
@@ -2333,43 +2468,97 @@ function formatTrims(text){
   return lines.slice(0,2).map(escapeHtml).join('<br>') + `<br><span style="color:var(--t3)">+ ${lines.length-2} more</span>`;
 }
 
-function renderSubSelect(p, rowIdx){
-  const recFab = p.fabrics.find(f => f.status === 'recommend');
-  if(!recFab) return '';
-  // 用 cached 結果、但若 cached 是 [] 就重算（避免 BOM 先上傳、公檔後上傳的 race condition）
-  let candidates, diag;
-  if(recFab.candidates && recFab.candidates.length > 0){
-    candidates = recFab.candidates;
-    diag = recFab.candidatesDiag || null;
-  } else {
-    const fresh = findCandidates(recFab, 50);
-    candidates = fresh.candidates;
-    diag = fresh.diag;
-    // 快取回去
-    recFab.candidates = candidates;
-    recFab.candidatesDiag = diag;
-  }
-  const selKey = `${rowIdx}_${recFab.rd||'empty'}`;
-  const selectedCand = State.excel.selectedCands[selKey];
-  return `<div class="sub-select">
-    <h4>🔄 為 ${escapeHtml(p.styleKey || p.style)} 選擇代用主布</h4>
-    <div class="orig-fabric-card">
-      <div class="lbl">⚠ 要替換的主布（公檔沒有這塊 RD）</div>
-      <div class="rd">${escapeHtml(recFab.rd || '(未知 RD)')}${recFab.sub?` — ${escapeHtml(recFab.sub)}`:''}</div>
-      <div style="font-size:.85em;color:var(--t2);margin-top:2px">客人 Excel 指定的原始主布</div>
-      <div class="info-grid">
-        <div><div class="k">成分</div><div class="v">${escapeHtml(recFab.composition||'—')}</div></div>
-        <div><div class="k">克重</div><div class="v">${escapeHtml(recFab.weight||'—')}</div></div>
-        <div><div class="k">寬幅</div><div class="v">${escapeHtml(recFab.width||'—')}</div></div>
-        <div><div class="k">類型</div><div class="v">${escapeHtml(recFab.type||'—')}${recFab.sub?' · '+escapeHtml(recFab.sub):''}</div></div>
-        <div><div class="k">縮率</div><div class="v">${escapeHtml(recFab.shrinkage||'—')}</div></div>
-        <div><div class="k">廠商</div><div class="v">${escapeHtml(recFab.supplier||'—')}</div></div>
-        <div><div class="k">角色</div><div class="v">${escapeHtml(recFab.role||'主布')}</div></div>
+// 推薦 modal 內的「細化查詢」表單 — 讓使用者可以補/改 sub/comp/weight/width 再重搜
+function renderRefineForm(recFab, rowIdx){
+  const key = `${rowIdx}|${recFab.rd||'empty'}`;
+  // 從 weight 字串拆出數字（"265.0 g/m²" → 265.0）
+  const wMatch = String(recFab.weight||'').match(/(\d+(?:\.\d+)?)/);
+  const wDigits = wMatch ? wMatch[1] : '';
+  const spOverride = recFab._spandexOverride;
+  const spVal = spOverride === true ? 'yes' : spOverride === false ? 'no' : 'auto';
+  const subOptions = `
+    <option value="">(不指定)</option>
+    <optgroup label="── Knit ──">
+      ${KNIT_FAMILIES.map(f => `<option value="${escapeHtml(f)}" ${recFab.sub===f?'selected':''}>${escapeHtml(f)}</option>`).join('')}
+    </optgroup>
+    <optgroup label="── Woven ──">
+      ${WOVEN_FAMILIES.map(f => `<option value="${escapeHtml(f)}" ${recFab.sub===f?'selected':''}>${escapeHtml(f)}</option>`).join('')}
+    </optgroup>`;
+  const autoBadge = recFab._autoSub
+    ? `<span style="background:var(--or-soft);color:var(--or);font-size:.7em;font-weight:600;padding:1px 6px;border-radius:3px;margin-left:6px" title="從『${escapeHtml(recFab._autoSubFrom||'')}』自動偵測">🤖 自動</span>`
+    : '';
+  return `<div class="refine-query" style="background:#f0f7fb;border:1px solid var(--bd);border-radius:7px;padding:12px 14px;margin-bottom:12px">
+    <div style="font-size:.85em;color:var(--t2);font-weight:600;margin-bottom:8px">🔍 細化查詢條件 <span style="font-weight:400;color:var(--t3)">— 資訊不夠就在這補/改後重搜</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 12px;font-size:.82em">
+      <div>
+        <label style="display:block;font-size:.78em;color:var(--t2);margin-bottom:3px">布種${autoBadge}</label>
+        <select data-refine-sub="${key}" style="width:100%;padding:5px 7px;border:1px solid var(--bd);border-radius:4px;font-size:.85em">${subOptions}</select>
+      </div>
+      <div>
+        <label style="display:block;font-size:.78em;color:var(--t2);margin-bottom:3px">成分</label>
+        <input type="text" data-refine-comp="${key}" value="${escapeHtml(recFab.composition||'')}" placeholder="例：100% Cotton" style="width:100%;padding:5px 7px;border:1px solid var(--bd);border-radius:4px;font-size:.85em">
+      </div>
+      <div>
+        <label style="display:block;font-size:.78em;color:var(--t2);margin-bottom:3px">克重 (g/m²)</label>
+        <input type="number" data-refine-weight="${key}" value="${escapeHtml(wDigits)}" placeholder="例：200" style="width:100%;padding:5px 7px;border:1px solid var(--bd);border-radius:4px;font-size:.85em">
+      </div>
+      <div>
+        <label style="display:block;font-size:.78em;color:var(--t2);margin-bottom:3px">寬幅</label>
+        <input type="text" data-refine-width="${key}" value="${escapeHtml(recFab.width||'')}" placeholder='例：60"' style="width:100%;padding:5px 7px;border:1px solid var(--bd);border-radius:4px;font-size:.85em">
+      </div>
+      <div>
+        <label style="display:block;font-size:.78em;color:var(--t2);margin-bottom:3px">彈性</label>
+        <select data-refine-spandex="${key}" style="width:100%;padding:5px 7px;border:1px solid var(--bd);border-radius:4px;font-size:.85em">
+          <option value="auto" ${spVal==='auto'?'selected':''}>自動偵測</option>
+          <option value="yes" ${spVal==='yes'?'selected':''}>含彈性</option>
+          <option value="no" ${spVal==='no'?'selected':''}>不含彈性</option>
+        </select>
       </div>
     </div>
-    <div style="font-size:.88em;color:var(--bl);font-weight:700;margin-bottom:10px">💡 系統推薦的代用布料</div>
-    <div class="sub-candidates">
-      ${candidates.length === 0 ? `<div style="padding:14px 16px;background:var(--or-soft);border:1px solid var(--or);border-radius:6px">
+    <div style="margin-top:10px;text-align:right">
+      <button class="btn s sm" data-refine-search="${key}">🔄 用這些條件重新搜尋</button>
+    </div>
+  </div>`;
+}
+
+function renderSubSelect(p, rowIdx){
+  const recFabs = p.fabrics.filter(f => f.status === 'recommend');
+  if(recFabs.length === 0) return '';
+  // 每個 recFab 用獨立 cache 跟 select key
+  const recSections = recFabs.map((recFab, fabIdx) => {
+    let candidates, diag;
+    if(recFab.candidates && recFab.candidates.length > 0){
+      candidates = recFab.candidates;
+      diag = recFab.candidatesDiag || null;
+    } else {
+      const fresh = findCandidates(recFab, 50);
+      candidates = fresh.candidates;
+      diag = fresh.diag;
+      recFab.candidates = candidates;
+      recFab.candidatesDiag = diag;
+    }
+    const selKey = `${rowIdx}_${recFab.rd||'empty'}`;
+    const selectedCand = State.excel.selectedCands[selKey];
+    const isMain = fabIdx === 0;  // 第一個視為主布、其他配布
+    const roleTag = isMain ? '⭐ 主布' : (recFab.role || '🎨 配布');
+    return `<div class="sub-fab-block" style="margin-bottom:18px">
+      <div class="orig-fabric-card">
+        <div class="lbl">⚠ 要替換的${escapeHtml(roleTag)}（公檔沒有這塊 RD）</div>
+        <div class="rd">${escapeHtml(displayRd(recFab.rd) || '(未知 RD)')}${recFab.sub?` — ${escapeHtml(recFab.sub)}`:''} ${brandChips(recFab.originBrand)}</div>
+        <div style="font-size:.85em;color:var(--t2);margin-top:2px">客人 Excel 指定的原始${escapeHtml(roleTag)}</div>
+        <div class="info-grid">
+          <div><div class="k">成分</div><div class="v">${escapeHtml(recFab.composition||'—')}</div></div>
+          <div><div class="k">克重</div><div class="v">${escapeHtml(recFab.weight||'—')}</div></div>
+          <div><div class="k">寬幅</div><div class="v">${escapeHtml(recFab.width||'—')}</div></div>
+          <div><div class="k">類型</div><div class="v">${escapeHtml(recFab.type||'—')}${recFab.sub?' · '+escapeHtml(recFab.sub):''}</div></div>
+          <div><div class="k">縮率</div><div class="v">${escapeHtml(recFab.shrinkage||'—')}</div></div>
+          <div><div class="k">廠商</div><div class="v">${escapeHtml(recFab.supplier||'—')}</div></div>
+        </div>
+      </div>
+      <div style="font-size:.88em;color:var(--bl);font-weight:700;margin:10px 0">💡 系統推薦的代用${escapeHtml(roleTag)}</div>
+      ${renderRefineForm(recFab, rowIdx)}
+      <div class="sub-candidates">
+        ${candidates.length === 0 ? `<div style="padding:14px 16px;background:var(--or-soft);border:1px solid var(--or);border-radius:6px">
           <div style="color:var(--or);font-weight:700;margin-bottom:8px">沒有相似的候選</div>
           ${diag ? `<div style="font-family:Consolas,monospace;font-size:.82em;color:var(--t2);line-height:1.8">
             <div>公檔總數：<b>${diag.total}</b> 塊布</div>
@@ -2383,33 +2572,99 @@ function renderSubSelect(p, rowIdx){
           <div style="margin-top:10px;color:var(--t2);font-size:.85em">
             ${diag && diag.total === 0 ? '⚠ 公檔還沒上傳？先去 Settings → 資料管理 載入 KNIT_Public.xlsx / WOVEN_Public.xlsx' :
               diag && diag.afterSpandex === 0 ? `⚠ 含/不含彈性的條件擋掉全部 — query 偵測為 ${detectSpandex(recFab)?'含彈性':'不含彈性'}` :
+              diag && diag.afterSub === 0 ? `⚠ Subtype 條件擋掉全部 — 公檔沒有同 family (${escapeHtml(recFab.sub||'?')}) 的布料` :
               diag && diag.afterWeight === 0 ? '⚠ 重量條件擋掉全部 — 沒有公檔在 ±20% 範圍內' :
               diag && diag.strictPass + diag.groupAPass === 0 ? '⚠ 成分條件擋掉全部 — 沒有公檔的纖維比例在容差內' :
               '可能要先請負責人新增這塊 RD'}
           </div>
-          <button class="btn s sm" style="margin-top:10px" data-recand="${rowIdx}">🔄 重新搜尋</button>
+          <button class="btn s sm" style="margin-top:10px" data-recand="${rowIdx}|${escapeHtml(recFab.rd||'empty')}">🔄 重新搜尋</button>
         </div>` :
         candidates.map(c => {
           const isSel = selectedCand === c.fab.rd;
           return `<label class="sub-cand ${isSel?'selected':''}">
-            <input type="radio" name="cand-${rowIdx}" value="${escapeHtml(c.fab.rd)}" ${isSel?'checked':''} data-cand-sel="${rowIdx}|${escapeHtml(recFab.rd||'')}|${escapeHtml(c.fab.rd)}">
-            <div class="rd">${escapeHtml(c.fab.rd)}</div>
+            <input type="radio" name="cand-${rowIdx}-${escapeHtml(recFab.rd||'empty')}" value="${escapeHtml(c.fab.rd)}" ${isSel?'checked':''} data-cand-sel="${rowIdx}|${escapeHtml(recFab.rd||'empty')}|${escapeHtml(c.fab.rd)}">
+            <div class="rd">${escapeHtml(displayRd(c.fab.rd))} ${brandChips(c.fab.originBrand)}</div>
             <div class="info">
               <div><b>${escapeHtml(c.fab.sub||'')}</b> · ${escapeHtml(c.fab.composition||'')} · ${escapeHtml(c.fab.weight||'')} · ${escapeHtml(c.fab.width||'')}</div>
-              <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(c.fab.supplier||'')}</div>
+              <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(c.fab.supplier||'')}${c.groupA?' · ⚠ Group A 替代':''}${c.weightRelaxed?' · ⚠ 重量 ±20% 放寬':''}</div>
             </div>
-            <div class="score-pill ${c.score<80?'mid':''}">match ${c.score}</div>
-            <div class="meta-mini">${escapeHtml(c.diff)}</div>
           </label>`;
         }).join('')
       }
-    </div>
+      </div>
+    </div>`;
+  }).join('');
+  // 統計選擇進度
+  const allKeys = recFabs.map(rf => `${rowIdx}_${rf.rd||'empty'}`);
+  const selectedCount = allKeys.filter(k => State.excel.selectedCands[k]).length;
+  const allSelected = selectedCount === recFabs.length;
+  return `<div class="sub-select">
+    <h4>🔄 為 ${escapeHtml(p.styleKey || p.style)} 選擇代用布料（${recFabs.length} 塊需要替換）</h4>
+    ${recSections}
     <div class="sub-actions">
-      <span style="flex:1;font-size:.82em;color:var(--t2)">${selectedCand ? `已選 <b style="color:var(--ac)">${escapeHtml(selectedCand)}</b>` : '請選一個候選'}</span>
+      <span style="flex:1;font-size:.82em;color:var(--t2)">${allSelected ? `<b style="color:var(--gn)">✓ ${recFabs.length} 塊代用布都選好了</b>` : `已選 ${selectedCount}/${recFabs.length} 塊`}</span>
       <button class="btn s" data-xl-cancel-sub="${rowIdx}">取消</button>
-      <button class="btn gn" data-xl-commit-sub="${rowIdx}" ${!selectedCand?'disabled':''}>✓ 採用代用布並產生 comment</button>
+      <button class="btn gn" data-xl-commit-sub="${rowIdx}" ${!allSelected?'disabled':''}>✓ 採用全部並產生 comment</button>
     </div>
   </div>`;
+}
+
+// 推薦 modal 跟單筆查詢結果頁共用的「重新搜尋」按鈕綁定
+function attachRefineHandlers(){
+  document.querySelectorAll('[data-refine-search]').forEach(b => b.onclick = () => {
+    const key = b.dataset.refineSearch;
+    const [rowIdxStr, origRd] = key.split('|');
+    const rowIdx = +rowIdxStr;
+    const subSel = document.querySelector(`[data-refine-sub="${key}"]`);
+    const compInp = document.querySelector(`[data-refine-comp="${key}"]`);
+    const wInp = document.querySelector(`[data-refine-weight="${key}"]`);
+    const widInp = document.querySelector(`[data-refine-width="${key}"]`);
+    const spSel = document.querySelector(`[data-refine-spandex="${key}"]`);
+    let target;
+    if(rowIdx === -1){
+      target = State.search.pendingRefine;
+      if(!target) return;
+    } else {
+      const p = State.excel.rows[rowIdx];
+      if(!p) return;
+      target = p.fabrics.find(f => f.status === 'recommend' && (f.rd||'empty') === origRd);
+      if(!target) return;
+    }
+    if(subSel){
+      if(subSel.value){
+        target.sub = subSel.value;
+        target._autoSub = false;
+        const cls = classifyType(subSel.value);
+        if(cls === 'knit') target.type = 'Knit';
+        else if(cls === 'woven') target.type = 'Woven';
+      } else {
+        target.sub = '';
+      }
+    }
+    if(compInp) target.composition = compInp.value || '';
+    if(wInp) target.weight = wInp.value ? wInp.value + ' g/m²' : '';
+    if(widInp) target.width = widInp.value || '';
+    if(spSel){
+      if(spSel.value === 'yes') target._spandexOverride = true;
+      else if(spSel.value === 'no') target._spandexOverride = false;
+      else delete target._spandexOverride;
+    }
+    if(rowIdx === -1){
+      const result = findCandidates(target, 50);
+      if(result.candidates.length > 0){
+        State.search.result = { kind:'recommend', query:State.search.result.query, parsedFab:target, candidates:result.candidates, weightRelaxed:result.weightRelaxed, queryType:result.queryType };
+      } else {
+        State.search.result = { kind:'recommendEmpty', query:State.search.result.query, parsedFab:target, diag:result.diag };
+      }
+      render();
+      toast('已用新條件搜尋','gn');
+    } else {
+      delete target.candidates;
+      delete target.candidatesDiag;
+      renderTabContent();
+      toast('已用新條件搜尋','gn');
+    }
+  });
 }
 
 function attachExcelTab(){
@@ -2449,10 +2704,11 @@ function attachExcelTab(){
   document.querySelectorAll('[data-xl-commit-all-actual]').forEach(b => b.onclick = () => commitAllActual());
   document.querySelectorAll('[data-xl-edit-row]').forEach(b => b.onclick = () => editCommittedRow(+b.dataset.xlEditRow));
   document.querySelectorAll('[data-recand]').forEach(b => b.onclick = () => {
-    const rowIdx = +b.dataset.recand;
+    const [rowIdxStr, origRd] = b.dataset.recand.split('|');
+    const rowIdx = +rowIdxStr;
     const p = State.excel.rows[rowIdx];
     if(!p) return;
-    const recFab = p.fabrics.find(f => f.status === 'recommend');
+    const recFab = p.fabrics.find(f => f.status === 'recommend' && (f.rd||'empty') === origRd);
     if(!recFab) return;
     // 清掉舊 cache 強制重算
     delete recFab.candidates;
@@ -2460,6 +2716,8 @@ function attachExcelTab(){
     renderTabContent();
     toast('已重新搜尋','gn');
   });
+  attachRefineHandlers();
+  document.querySelectorAll('[data-refine-search]').forEach(() => {});
 }
 
 function editCommittedRow(idx){
@@ -2479,25 +2737,81 @@ function editCommittedRow(idx){
 
 function parseExcelRows(rawRows, cols, headerIdx, fileName){
   const dataRows = rawRows.slice(headerIdx + 1).filter(r => r && r.some(c => String(c||'').trim()));
+  const knownFamilies = new Set([...KNIT_FAMILIES, ...WOVEN_FAMILIES].map(f => f.toLowerCase()));
   return dataRows.map((r, idx) => {
     const get = k => cols[k] !== undefined ? String(r[cols[k]] ?? '').trim() : '';
     const style = get('style');
     const bom = get('bom');
-    const mainMat = get('mainMat');
-    const subMat = get('subMat');
-    const fabrics = mainMat ? parseMainCell(mainMat).map(f => {
+    const rdCell = get('rd');
+    const subCell = get('sub');
+    const compCell = get('composition');
+    const mainMat = get('mainMat');  // 後相容：BAC 格式整段塞一個 cell
+
+    let fabrics = [];
+    if(mainMat){
+      // BAC 整段格式：用 parseMainCell 拆 RD + 成分 + 克重 + ...
+      fabrics = parseMainCell(mainMat);
+    } else if(rdCell){
+      const t = rdCell.trim();
+      if(/^\s*RD#?\s*\d{3,}\s*$/i.test(t) || /^\d{3,}$/.test(t)){
+        // 純數字 / RD#NNNN — 只有 RD、沒成分
+        const rd = normalizeRD(t);
+        const f = { rd, role:'主布' };
+        if(compCell) f.composition = compCell;
+        fabrics = [f];
+      } else {
+        // 多行 / 整段描述 — 用 parseMainCell 處理
+        fabrics = parseMainCell(t);
+        if(compCell){
+          fabrics.forEach(f => { if(!f.composition) f.composition = compCell; });
+        }
+      }
+    }
+
+    // 從「布種」column 自動抓 family（如果有選這 column）
+    if(subCell && fabrics.length > 0){
+      const clean = subCell.trim();
+      // 先試乾淨匹配（cell 本身就是 family 名）
+      let directHit = null;
+      if(knownFamilies.has(clean.toLowerCase())){
+        // 取原始大小寫的版本
+        directHit = [...KNIT_FAMILIES, ...WOVEN_FAMILIES].find(f => f.toLowerCase() === clean.toLowerCase());
+      }
+      fabrics.forEach(f => {
+        if(f.sub) return;  // 整段 cell 已解析出 sub、別蓋掉
+        if(directHit){
+          f.sub = directHit;
+          // 不算 auto、是清楚輸入
+        } else {
+          const extracted = extractSubFromText(clean);
+          if(extracted){
+            f.sub = extracted;
+            f._autoSub = true;
+            f._autoSubFrom = clean.slice(0, 80);
+          }
+        }
+        // 連動 type
+        if(f.sub){
+          const cls = classifyType(f.sub);
+          if(cls === 'knit') f.type = 'Knit';
+          else if(cls === 'woven') f.type = 'Woven';
+        }
+      });
+    }
+
+    // 每塊 fabric 跑 determineStatus + 必要時 findCandidates
+    fabrics = fabrics.map(f => {
       const st = determineStatus(f);
       const cands = st.status === 'recommend' ? findCandidates(f, 50).candidates : [];
       return { ...f, ...st, candidates: cands };
-    }) : [];
+    });
+
     const styleKey = style && bom ? `${style.split('_')[0]}_${bom}` : style;
     const existing = Store.get('style:'+styleKey);
     return {
       rowNum: headerIdx + 2 + idx,
       style, bom, styleKey,
-      mainMat, subMat,
-      season: get('season'),
-      category: get('category'),
+      mainMat,
       fabrics,
       committed: !!(existing && existing._fromImport === fileName)
     };
@@ -2565,25 +2879,45 @@ function commitExcelRowSubstitute(idx){
   const p = State.excel.rows[idx];
   if(!p) return;
   if(!isAdmin()){ toast('只有負責人能採用','or'); return; }
-  const recFab = p.fabrics.find(f => f.status === 'recommend');
-  if(!recFab) return;
-  const selKey = `${idx}_${recFab.rd||'empty'}`;
-  const candRd = State.excel.selectedCands[selKey];
-  if(!candRd){ toast('請先選一個代用布','or'); return; }
-  // Use the chosen candidate as the main fabric, accessories from rest
-  saveStyleFromExcel(p,
-    { rd:candRd, label:recFab.role||'', originalRd:recFab.rd },
-    p.fabrics.slice(1).filter(f=>f.rd && f.status==='actual').map(f=>({rd:f.rd,label:f.role||'配布'})),
-    { kind:'substitute', originalRd:recFab.rd, originalFab:recFab }
-  );
-  // 客人原本要的 RD 也存進公檔（即使我們用代用布，原 RD 的規格還是有價值）
-  commitFabricsFromBom([recFab, ...p.fabrics.slice(1).filter(f => f.rd)], State.excel.fileName || 'BOM');
+  const recFabs = p.fabrics.filter(f => f.status === 'recommend');
+  if(recFabs.length === 0) return;
+  // 收集每個 recommend 布料的選擇
+  const subs = {};  // originalRd → candRd
+  for(const recFab of recFabs){
+    const selKey = `${idx}_${recFab.rd||'empty'}`;
+    const candRd = State.excel.selectedCands[selKey];
+    if(!candRd){ toast(`請先選 ${recFab.rd||'(空白 RD)'} 的代用布`,'or'); return; }
+    subs[recFab.rd] = candRd;
+  }
+  // 第一個 fabric 是主布
+  const mainOrig = p.fabrics[0];
+  const mainRd = mainOrig.status === 'recommend' ? subs[mainOrig.rd] : mainOrig.rd;
+  const mainFabric = {
+    rd: mainRd,
+    label: mainOrig.role || '',
+    originalRd: mainOrig.status === 'recommend' ? mainOrig.rd : undefined
+  };
+  // 其他都是配布、各自處理（recommend → 換、actual → 留）
+  const accessories = p.fabrics.slice(1).filter(f => f.rd).map(f => {
+    const rd = f.status === 'recommend' ? subs[f.rd] : f.rd;
+    return {
+      rd,
+      label: f.role || '配布',
+      originalRd: f.status === 'recommend' ? f.rd : undefined
+    };
+  });
+  saveStyleFromExcel(p, mainFabric, accessories, {
+    kind: 'substitute',
+    substitutions: subs,
+    originalRd: mainOrig.rd,
+    originalFab: mainOrig
+  });
+  // 客人原本要的 RD 也存進公檔（即使我們用代用布、原 RD 的規格還是有價值）
+  commitFabricsFromBom(p.fabrics.filter(f => f.rd), State.excel.fileName || 'BOM');
   p.committed = true;
   State.excel.expandedRow = null;
-  // Generate and copy comment
-  const main = Store.get('fabric:'+candRd);
   copyCommentForStyle(p.styleKey, true);
-  toast(`已採用代用布 ${candRd}（comment 已複製）`,'gn');
+  toast(`已採用 ${recFabs.length} 塊代用布（comment 已複製）`,'gn');
   renderTabContent();
 }
 
@@ -2710,7 +3044,7 @@ function renderPendingCard(r, isDone){
   return `<div class="pr-card ${isDone?'resolved':''}">
     <div class="ico">${isDone?'✅':'📩'}</div>
     <div class="info">
-      <div class="rd">${escapeHtml(r.rd)}</div>
+      <div class="rd">${escapeHtml(displayRd(r.rd))}</div>
       <div class="meta">${fromBrand}來自 <b>${escapeHtml(r.fromUser||'某成員')}</b> · ${ts}</div>
       ${r.message ? `<div class="msg">"${escapeHtml(r.message)}"</div>` : ''}
     </div>
@@ -3435,7 +3769,7 @@ function showFabScanConfirm({ newOnes, typeOverride, skipped, totalScanned, uncR
                 const t = typeOverride === 'auto' ? (f.detectedType || '?') : typeOverride;
                 const dt = f.lastModified ? new Date(f.lastModified).toISOString().slice(0,10) : '';
                 return `<div style="padding:5px 0;border-top:1px solid var(--bd2)">
-                  <b>${escapeHtml(f.rd)}</b> · <span class="cell-cat">${escapeHtml(t)}</span>${dt?` · <span style="color:var(--t3)">${dt}</span>`:''}
+                  <b>${escapeHtml(displayRd(f.rd))}</b> · <span class="cell-cat">${escapeHtml(t)}</span>${dt?` · <span style="color:var(--t3)">${dt}</span>`:''}
                   <div style="color:var(--t3);font-size:.78em">${escapeHtml(f.folderUnc)}</div>
                 </div>`;
               }).join('')}
@@ -3481,7 +3815,7 @@ function showImportConfirm({ fileName, fabricType, parsed, colsDetected, sampleF
             <div style="font-size:.85em;color:var(--t2);font-weight:600;margin:14px 0 6px">前 3 筆預覽：</div>
             <div style="background:var(--hd);border-radius:7px;padding:10px;font-size:.82em;font-family:Consolas,monospace;max-height:240px;overflow:auto">
               ${sampleFabrics.map(f => `<div style="padding:6px 0;border-top:1px solid var(--bd2)">
-                <b>${escapeHtml(f.rd)}</b> · <span class="cell-cat">${fabricType}</span><br>
+                <b>${escapeHtml(displayRd(f.rd))}</b> · <span class="cell-cat">${fabricType}</span> ${brandChips(f.originBrand)}<br>
                 ${escapeHtml(f.sub||'—')} · ${escapeHtml(f.composition||'—')} · ${escapeHtml(f.weight||'—')} · ${escapeHtml(f.width||'—')}${f.supplier?` · ${escapeHtml(f.supplier)}`:''}${f.spandex?' · SP':''}
               </div>`).join('')}
             </div>
@@ -3508,6 +3842,7 @@ function showImportConfirm({ fileName, fabricType, parsed, colsDetected, sampleF
 // ============================================================
 function attachResultHandlers(){
   document.querySelectorAll('[data-clear]').forEach(b => b.onclick = () => { State.search.result = null; render(); });
+  attachRefineHandlers();
   document.querySelectorAll('[data-recent]').forEach(b => b.onclick = () => { document.getElementById('qbox').value = b.dataset.recent; doSearch(); });
   document.querySelectorAll('[data-view-rd]').forEach(el => el.onclick = e => {
     e.preventDefault();
@@ -3526,6 +3861,24 @@ function attachResultHandlers(){
   });
   document.querySelectorAll('[data-copy-comment]').forEach(b => b.onclick = () => copyCommentForStyle(b.dataset.copyComment, false));
   document.querySelectorAll('[data-edit-main-fab]').forEach(b => b.onclick = () => openEditMainFab(b.dataset.editMainFab));
+  document.querySelectorAll('[data-delete-style]').forEach(b => b.onclick = () => {
+    if(!isAdmin()){ toast('只有負責人能刪','or'); return; }
+    const key = b.dataset.deleteStyle;
+    const style = Store.get('style:' + key);
+    if(!style){ toast('找不到這款','or'); return; }
+    const styleKey = style.styleKey || key;
+    if(!confirm(`確定要刪除 ${styleKey} 的採用紀錄嗎？\n\n會刪掉：\n• 主布 / 配布記錄\n• 歷史紀錄\n• Comment 資料\n\n公檔的 RD 規格不會動。\n刪除後可以從 Excel 重新匯入再採用。`)) return;
+    Store.delete('style:' + key);
+    // 把 State.excel.rows 裡同款的 committed flag 也清掉、不用重傳就能再走流程
+    if(State.excel && State.excel.rows){
+      State.excel.rows.forEach(p => {
+        if((p.styleKey || p.style) === styleKey) p.committed = false;
+      });
+    }
+    State.search.result = null;
+    toast(`✓ 已刪除 ${styleKey} 的採用紀錄`, 'gn');
+    render();
+  });
   document.querySelectorAll('[data-disambig-type]').forEach(b => b.onclick = () => {
     // admin 選了 Knit 或 Woven — 修改 parsedFab.type 並重跑 findCandidates
     const r = State.search.result;
@@ -3596,7 +3949,7 @@ function applyTemplate(tmpl, actual, original, style){
     ? State.user.name
     : (style && style.brand && BRANDS[style.brand] ? BRANDS[style.brand].tech : '');
   const repl = {
-    actual_rd: actual.rd || '',
+    actual_rd: displayRd(actual.rd || ''),
     actual_sub: actual.sub || '',
     actual_composition: actual.composition || '',
     actual_width: actual.width || '—',
@@ -3604,7 +3957,7 @@ function applyTemplate(tmpl, actual, original, style){
     actual_shrinkage: actual.shrinkage || '—',
     actual_supplier: actual.supplier || '—',
     actual_notes_block: notesBlock,
-    original_rd: original ? original.rd : (style && style.mainFabric && style.mainFabric.originalRd) || '',
+    original_rd: displayRd(original ? original.rd : (style && style.mainFabric && style.mainFabric.originalRd) || ''),
     original_sub: original ? (original.sub || '') : '',
     original_composition: original ? (original.composition || '') : '',
     original_weight: original ? (original.weight || '') : '',
@@ -3695,13 +4048,13 @@ function openEditMainFab(styleKey){
     const rd = normalizeRD(raw);
     if(!rd.startsWith('RD#')){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">⚠ 格式不對 (應為 RD#數字 或純數字)</div>`; return; }
     const f = Store.get('fabric:'+rd);
-    if(!f){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">❌ 公檔找不到 <b>${escapeHtml(rd)}</b>，先到 Settings → 資料管理 補進公檔再來。</div>`; return; }
+    if(!f){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">❌ 公檔找不到 <b>${escapeHtml(displayRd(rd))}</b>，先到 Settings → 資料管理 補進公檔再來。</div>`; return; }
     foundFab = f;
     okBtn.disabled = false;
     const src = (f.source||'').startsWith('lib:') ? '🟢 Gap Inc Excel' : (f.source||'').startsWith('scan:') ? '⚪ 公檔新布' : (f.source||'').startsWith('bom:') ? '🟢 客人 BOM' : '';
     preview.innerHTML = `
       <div style="border-left:3px solid var(--gn);padding:9px 12px;background:rgba(46,125,50,.05);border-radius:5px;font-size:.85em">
-        ✓ 找到 <b>${escapeHtml(f.rd)}</b> ${src}<br>
+        ✓ 找到 <b>${escapeHtml(displayRd(f.rd))}</b> ${brandChips(f.originBrand)} ${src}<br>
         <b>${escapeHtml(f.sub||'(未填)')}</b> · ${escapeHtml(f.composition||'—')}<br>
         <span style="color:var(--t2)">${escapeHtml(f.weight||'—')} · ${escapeHtml(f.width||'—')} · ${escapeHtml(f.supplier||'—')}</span>
       </div>
@@ -3899,3 +4252,4 @@ window.GISFDT = { CONFIG, BRANDS, Store, State, CloudSync, render, performSearch
 </script>
 </body>
 </html>
+
