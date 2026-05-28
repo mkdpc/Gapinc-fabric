@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.37',
+  VERSION: '5.0.38',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1542,7 +1542,6 @@ function openMemberBrandPicker(){
   `;
   const close = () => { root.innerHTML = ''; };
   document.getElementById('mbp-cancel').onclick = close;
-  document.getElementById('mbp-bg').onclick = e => { if(e.target.id === 'mbp-bg') close(); };
   document.querySelectorAll('[data-mbp-brand]').forEach(btn => {
     btn.onclick = () => {
       const k = btn.dataset.mbpBrand;
@@ -1884,8 +1883,6 @@ function findStyle(q){
 }
 
 function renderStyleResult(s, key){
-  const main = s.mainFabric ? Store.get('fabric:'+s.mainFabric.rd) : null;
-  const substituteOriginal = s.mainFabric && s.mainFabric.originalRd ? s.mainFabric.originalRd : null;
   const accFabrics = (s.accessories || []).map(a => ({ ...a, fab: Store.get('fabric:'+a.rd) }));
   const history = (Store.get('history') || []).filter(h => h.style === key);
   const bb = BRANDS[s.brand];
@@ -1899,9 +1896,50 @@ function renderStyleResult(s, key){
       }).join('')
     : '';
 
+  // 主布卡片 builder（main / main2 共用）
+  const buildMainCard = (fab, slotKey) => {
+    if(!fab){
+      return `<div class="fcard"><div class="empty-state"><div class="ico">⚠️</div><h3>${slotKey==='main2'?'主布2 尚未指定':'主布尚未指定'}</h3></div></div>`;
+    }
+    const f = Store.get('fabric:'+fab.rd);
+    const isSub = !!fab.originalRd;
+    const roleLabel = slotKey === 'main2' ? '主布2 (SET 下身)' : '主布';
+    if(!f){
+      // 公檔沒這 RD（罕見）— 用 fab 的 originalSpec/label 簡單顯示
+      const spec = fab.originalSpec || {};
+      return `<div class="fcard"><div class="ftop"><span class="role">⭐ ${roleLabel}</span><span class="sbadge empty">公檔缺</span></div>
+        <div class="rd-line">${escapeHtml(displayRd(fab.rd))}</div>
+        <div class="props">${escapeHtml(spec.sub||'')} · ${escapeHtml(spec.composition||'')}</div></div>`;
+    }
+    const spec = fab.originalSpec || {};
+    const origRdLine = isSub ? `<div style="font-size:.82em;color:var(--or);margin-bottom:6px">原指定 ${escapeHtml(displayRd(fab.originalRd))} → 採用 ↓${spec.sub||spec.composition||spec.weight?'<br><span style="color:var(--t2)">客人 spec：'+escapeHtml(spec.sub||'')+(spec.composition?' · '+escapeHtml(spec.composition):'')+(spec.weight?' · '+escapeHtml(spec.weight):'')+'</span>':''}</div>` : '';
+    return `<div class="fcard ${isSub?'sub-main':'main'}">
+      <div class="ftop">
+        <span class="role">${isSub?'🔄 採用代用':'⭐'} ${roleLabel} ${fab.label ? `(${escapeHtml(fab.label)})` : ''}</span>
+        <span class="sbadge ${isSub?'rec':'act'}">${isSub?'代用':'✓ actual'}</span>
+      </div>
+      ${origRdLine}
+      <div class="rd-line">${escapeHtml(displayRd(f.rd))} ${brandChips(f.originBrand)}</div>
+      <div class="name">${escapeHtml(f.sub||'')} · ${escapeHtml(f.type||'')}</div>
+      <div class="props">
+        <b>Composition:</b> ${escapeHtml(f.composition||'—')}<br>
+        <b>Width:</b> ${escapeHtml(f.width||'—')} &nbsp; <b>Shrinkage:</b> ${escapeHtml(f.shrinkage||'—')}<br>
+        <b>Weight:</b> ${escapeHtml(f.weight||'—')} &nbsp; <b>Supplier:</b> ${escapeHtml(f.supplier||'—')}
+      </div>
+      <div class="acts">
+        ${slotKey==='main'?`<button class="btn" data-copy-comment="${escapeHtml(key)}">📋 複製 Comment</button>`:''}
+        <button class="btn s" data-view-rd="${escapeHtml(f.rd)}">看完整資料</button>
+        ${isAdmin() && slotKey==='main' ?`<button class="btn s sm" data-edit-main-fab="${escapeHtml(key)}" title="工單改布料時用">✏️ 改主布${s.isSet?'/主布2':''}</button>`:''}
+        ${isAdmin() && slotKey==='main' ?`<button class="btn s sm" data-delete-style="${escapeHtml(key)}" style="background:rgba(193,52,40,.08);border-color:var(--rd);color:var(--rd)" title="刪除這款的採用紀錄（公檔不會動）">🗑 刪除採用</button>`:''}
+      </div>
+      ${f.notes?`<div style="background:rgba(194,92,32,.06);border-left:3px solid var(--or);padding:8px 12px;margin-top:10px;font-size:.83em;color:#7a4a20;border-radius:5px"><b>📝 備註：</b>${escapeHtml(f.notes)}</div>`:''}
+    </div>`;
+  };
+
   return `
     <div class="q-display-bar">
       <span class="lab">款號:</span><span class="val">${escapeHtml(key)}</span>${bomSelector}
+      ${s.isSet?'<span class="sbadge act" style="margin-left:6px">SET</span>':''}
       <button class="clr" data-clear="1">✕ 清除</button>
     </div>
     <div class="style-header">
@@ -1921,29 +1959,8 @@ function renderStyleResult(s, key){
       </div>
     </div>
     <div class="fab-layout">
-      ${main ? `
-        <div class="fcard ${substituteOriginal?'sub-main':'main'}">
-          <div class="ftop">
-            <span class="role">${substituteOriginal?'🔄 採用代用主布':'⭐ 主布'} ${s.mainFabric.label ? `(${escapeHtml(s.mainFabric.label)})` : ''}</span>
-            <span class="sbadge ${substituteOriginal?'rec':'act'}">${substituteOriginal?'代用':'✓ actual'}</span>
-          </div>
-          ${substituteOriginal?`<div style="font-size:.82em;color:var(--or);margin-bottom:6px">原指定 ${escapeHtml(displayRd(substituteOriginal))} → 採用 ↓</div>`:''}
-          <div class="rd-line">${escapeHtml(displayRd(main.rd))} ${brandChips(main.originBrand)}</div>
-          <div class="name">${escapeHtml(main.sub||'')} · ${escapeHtml(main.type||'')}</div>
-          <div class="props">
-            <b>Composition:</b> ${escapeHtml(main.composition||'—')}<br>
-            <b>Width:</b> ${escapeHtml(main.width||'—')} &nbsp; <b>Shrinkage:</b> ${escapeHtml(main.shrinkage||'—')}<br>
-            <b>Weight:</b> ${escapeHtml(main.weight||'—')} &nbsp; <b>Supplier:</b> ${escapeHtml(main.supplier||'—')}
-          </div>
-          <div class="acts">
-            <button class="btn" data-copy-comment="${escapeHtml(key)}">📋 複製 Comment</button>
-            <button class="btn s" data-view-rd="${escapeHtml(main.rd)}">看完整資料</button>
-            ${isAdmin()?`<button class="btn s sm" data-edit-main-fab="${escapeHtml(key)}" title="工單改布料時用">✏️ 改主布</button>`:''}
-            ${isAdmin()?`<button class="btn s sm" data-delete-style="${escapeHtml(key)}" style="background:rgba(193,52,40,.08);border-color:var(--rd);color:var(--rd)" title="刪除這款的採用紀錄（公檔不會動）">🗑 刪除採用</button>`:''}
-          </div>
-          ${main.notes?`<div style="background:rgba(194,92,32,.06);border-left:3px solid var(--or);padding:8px 12px;margin-top:10px;font-size:.83em;color:#7a4a20;border-radius:5px"><b>📝 備註：</b>${escapeHtml(main.notes)}</div>`:''}
-        </div>
-      ` : `<div class="fcard"><div class="empty-state"><div class="ico">⚠️</div><h3>主布尚未指定</h3></div></div>`}
+      ${buildMainCard(s.mainFabric, 'main')}
+      ${s.isSet || s.mainFabric2 ? buildMainCard(s.mainFabric2, 'main2') : ''}
       <div class="acc-list">
         <div class="acc-list-title">🎨 配布 (${accFabrics.length} 件)</div>
         ${accFabrics.map(a => {
@@ -2035,6 +2052,26 @@ function renderRdResult(rd, f){
         ${adm?`<button class="btn s sm" style="margin-top:10px" data-edit-notes="${escapeHtml(rd)}">✏️ 編輯備註</button>`:''}
       </div>
       <div>
+        ${(() => {
+          const usage = countRdUsage(rd);
+          const sub = usage.styles.filter(x => x.sub);
+          const total = usage.asMain + usage.asMain2 + usage.asAcc + usage.asOriginal;
+          if(total === 0) return '';
+          return `<div style="background:linear-gradient(135deg,#f0f7ff,#e8f0fc);border:1px solid #c8d8ee;border-radius:8px;padding:11px 14px;margin-bottom:12px;font-size:.88em">
+            <div style="font-weight:700;color:var(--ac);margin-bottom:6px">📊 使用統計</div>
+            <div style="display:flex;flex-wrap:wrap;gap:14px;line-height:1.5">
+              ${usage.asMain > 0 ? `<span>⭐ 主布 <b style="color:var(--ac)">${usage.asMain}</b> 次</span>` : ''}
+              ${usage.asMain2 > 0 ? `<span>⭐ 主布2 <b style="color:var(--ac)">${usage.asMain2}</b> 次</span>` : ''}
+              ${usage.asAcc > 0 ? `<span>🎨 配布 <b style="color:var(--ac)">${usage.asAcc}</b> 次</span>` : ''}
+              ${usage.asOriginal > 0 ? `<span>🔁 被代用 <b style="color:var(--or)">${usage.asOriginal}</b> 次（這 RD 是客人原指定）</span>` : ''}
+            </div>
+            ${sub.length > 0 ? `<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--ac);font-size:.85em">被代用詳細（${sub.length} 筆）</summary>
+              <div style="margin-top:5px;font-size:.82em;color:var(--t2);line-height:1.7">
+                ${sub.map(u => `<div>• <a href="#" data-view-style="${escapeHtml(u.key)}" style="color:var(--ac)">${escapeHtml(u.key)}</a> · ${escapeHtml(u.role)}</div>`).join('')}
+              </div>
+            </details>` : ''}
+          </div>`;
+        })()}
         <div class="used-in-card">
           <h4>📍 目前用於這些款號</h4>
           ${usedIn.length === 0 ? `<div style="color:var(--t3);font-size:.88em">尚未指定到任何款號</div>` : `
@@ -2042,10 +2079,10 @@ function renderRdResult(rd, f){
               <thead><tr><th>款號</th><th>角色</th></tr></thead>
               <tbody>${usedIn.map(u => `<tr>
                 <td><a href="#" data-view-style="${escapeHtml(u.key)}" style="color:inherit">${escapeHtml(u.key)}</a></td>
-                <td style="color:${u.role==='主布'?'var(--ac)':'#64748b'}">${u.role==='主布'?'⭐ 主布':'🎨 配布'}${u.label?` (${escapeHtml(u.label)})`:''}</td>
+                <td style="color:${u.role.startsWith('主布')?'var(--ac)':'#64748b'}">${u.role==='主布'?'⭐ 主布':u.role==='主布2'?'⭐ 主布2':'🎨 配布'}${u.label?` (${escapeHtml(u.label)})`:''}</td>
               </tr>`).join('')}</tbody>
             </table>
-            <div style="margin-top:11px;font-size:.82em;color:var(--t2);padding-top:11px;border-top:1px dashed var(--bd2)">共 <b>${usedIn.length}</b> 個款號（${usedIn.filter(u=>u.role==='主布').length} 主布 / ${usedIn.filter(u=>u.role==='配布').length} 配布）</div>
+            <div style="margin-top:11px;font-size:.82em;color:var(--t2);padding-top:11px;border-top:1px dashed var(--bd2)">共 <b>${usedIn.length}</b> 個款號（${usedIn.filter(u=>u.role==='主布').length} 主布 / ${usedIn.filter(u=>u.role==='主布2').length} 主布2 / ${usedIn.filter(u=>u.role==='配布').length} 配布）</div>
           `}
         </div>
         ${adm ? `<div class="admin-panel">
@@ -2067,6 +2104,7 @@ function findStylesUsingRd(rd){
     const s = Store.get('style:'+k);
     if(!s) return;
     if(s.mainFabric && s.mainFabric.rd === rd) out.push({ key:k, role:'主布', label:s.mainFabric.label });
+    if(s.mainFabric2 && s.mainFabric2.rd === rd) out.push({ key:k, role:'主布2', label:s.mainFabric2.label });
     (s.accessories||[]).forEach(a => { if(a.rd === rd) out.push({ key:k, role:'配布', label:a.label }); });
   });
   return out;
@@ -2297,6 +2335,39 @@ function renderNotifyForm(q){
 }
 
 function renderNotFound(q){
+  // 試抓 RD：如果 query 是 RD#NNNN 或純數字、掃 Store 看有沒有用過代用
+  let usageBlock = '';
+  const rdMatch = q.match(/^RD#?\s*(\d{3,})$/i);
+  if(rdMatch){
+    const targetRd = 'RD#' + rdMatch[1];
+    const usage = countRdUsage(targetRd);
+    const subUses = usage.styles.filter(x => x.sub);
+    if(subUses.length > 0){
+      usageBlock = `
+        <div style="margin-top:18px;padding:14px 16px;background:#fff8e6;border:1px solid #f0c674;border-radius:8px">
+          <div style="font-weight:700;color:#a06f00;margin-bottom:8px;font-size:.95em">
+            🔁 這個 RD 之前被當「客人原指定」、有 ${subUses.length} 筆代用記錄
+          </div>
+          ${subUses.map(u => {
+            const s = Store.get('style:'+u.key);
+            const ts = s && s.setDate ? s.setDate : '';
+            const setBy = s && s.setBy ? s.setBy : '';
+            return `<div style="padding:6px 0;border-top:1px dashed #e0c685;display:flex;justify-content:space-between;align-items:center;gap:10px">
+              <div style="flex:1">
+                <b style="color:var(--ac)">${escapeHtml(u.key)}</b> · ${escapeHtml(u.role)}
+                <div style="font-size:.82em;color:var(--t3);margin-top:2px">${escapeHtml(setBy)}${ts?' · '+escapeHtml(ts):''}</div>
+              </div>
+              <button class="btn s sm" data-view-style="${escapeHtml(u.key)}">→ 看款</button>
+              ${u.actualRd ? `<button class="btn s sm" data-copy-comment="${escapeHtml(u.key)}" title="複製此款的 comment">📋 comment</button>` : ''}
+            </div>`;
+          }).join('')}
+          <div style="margin-top:10px;font-size:.82em;color:#a06f00">
+            👉 之前有人在做這幾款時、也用過代用、可以參考。
+          </div>
+        </div>
+      `;
+    }
+  }
   return `
     <div class="q-display-bar">
       <span class="lab">${q.startsWith('RD')?'RD':'查詢'}:</span><span class="val">${escapeHtml(q)}</span>
@@ -2306,7 +2377,8 @@ function renderNotFound(q){
       <div class="notfound-card">
         <div class="ico">🔍</div>
         <h3>找不到 ${escapeHtml(q)}</h3>
-        <div class="why">系統的公檔（Knit / Woven / Denim）裡都沒這塊布，查詢紀錄也沒用過。可能是新布還沒登記、也可能 RD 打錯。</div>
+        <div class="why">系統的公檔（Knit / Woven / Denim）裡都沒這塊布。可能是新布還沒登記、也可能 RD 打錯。</div>
+        ${usageBlock}
         ${renderNotifyForm(q)}
       </div>
       <div class="tips-card">
@@ -2963,14 +3035,29 @@ function commitExcelRowSubstitute(idx){
     label: mainOrig.role || '',
     originalRd: mainOrig.status === 'recommend' ? mainOrig.rd : undefined
   };
+  if(mainOrig.status === 'recommend'){
+    mainFabric.originalSpec = {
+      sub: mainOrig.sub || '',
+      composition: mainOrig.composition || '',
+      weight: mainOrig.weight || '',
+      width: mainOrig.width || ''
+    };
+  }
   // 其他都是配布、各自處理（recommend → 換、actual → 留）
   const accessories = p.fabrics.slice(1).filter(f => f.rd).map(f => {
     const rd = f.status === 'recommend' ? subs[f.rd] : f.rd;
-    return {
+    const acc = {
       rd,
       label: f.role || '配布',
       originalRd: f.status === 'recommend' ? f.rd : undefined
     };
+    if(f.status === 'recommend'){
+      acc.originalSpec = {
+        sub: f.sub || '', composition: f.composition || '',
+        weight: f.weight || '', width: f.width || ''
+      };
+    }
+    return acc;
   });
   saveStyleFromExcel(p, mainFabric, accessories, {
     kind: 'substitute',
@@ -3855,7 +3942,6 @@ function showFabScanConfirm({ newOnes, typeOverride, skipped, totalScanned, uncR
     const cleanup = ans => { root.innerHTML = ''; resolve(ans); };
     document.getElementById('fs-cancel').onclick = () => cleanup(false);
     document.getElementById('fs-ok').onclick = () => cleanup(true);
-    document.getElementById('fs-bg').onclick = e => { if(e.target.id === 'fs-bg') cleanup(false); };
   });
 }
 
@@ -3899,7 +3985,6 @@ function showImportConfirm({ fileName, fabricType, parsed, colsDetected, sampleF
     const cleanup = (ans) => { root.innerHTML = ''; resolve(ans); };
     document.getElementById('ic-cancel').onclick = () => cleanup(false);
     document.getElementById('ic-ok').onclick = () => cleanup(true);
-    document.getElementById('ic-bg').onclick = e => { if(e.target.id === 'ic-bg') cleanup(false); };
   });
 }
 
@@ -4018,6 +4103,9 @@ function applyTemplate(tmpl, actual, original, style){
   const techName = (State.user && State.user.name)
     ? State.user.name
     : (style && style.brand && BRANDS[style.brand] ? BRANDS[style.brand].tech : '');
+  // 找 originalSpec — 公檔沒有客人指定 RD 時、用這個 fallback
+  const mf = style && style.mainFabric;
+  const spec = (mf && mf.originalSpec) || {};
   const repl = {
     actual_rd: displayRd(actual.rd || ''),
     actual_sub: actual.sub || '',
@@ -4027,11 +4115,11 @@ function applyTemplate(tmpl, actual, original, style){
     actual_shrinkage: actual.shrinkage || '—',
     actual_supplier: actual.supplier || '—',
     actual_notes_block: notesBlock,
-    original_rd: displayRd(original ? original.rd : (style && style.mainFabric && style.mainFabric.originalRd) || ''),
-    original_sub: original ? (original.sub || '') : '',
-    original_composition: original ? (original.composition || '') : '',
-    original_weight: original ? (original.weight || '') : '',
-    original_width: original ? (original.width || '') : '',
+    original_rd: displayRd(original ? original.rd : (mf && mf.originalRd) || ''),
+    original_sub: original ? (original.sub || '') : (spec.sub || ''),
+    original_composition: original ? (original.composition || '') : (spec.composition || ''),
+    original_weight: original ? (original.weight || '') : (spec.weight || ''),
+    original_width: original ? (original.width || '') : (spec.width || ''),
     style: style ? style.style : '',
     bom: style ? style.bom : '',
     brand: style ? (BRANDS[style.brand]?.name || '') : '',
@@ -4078,82 +4166,126 @@ function editNotes(rd){
   render();
 }
 
+
 function openEditMainFab(styleKey){
   const s = Store.get('style:'+styleKey);
   if(!s) return;
-  const oldRd = s.mainFabric ? s.mainFabric.rd : '';
-  const oldLabel = s.mainFabric ? (s.mainFabric.label || '') : '';
-  const root = document.getElementById('modal-root');
-  root.innerHTML = `
-    <div class="modal-bg" id="em-bg">
-      <div class="modal" style="max-width:560px">
-        <h3>✏️ 改主布 — ${escapeHtml(styleKey)}</h3>
-        <div class="body-x">
-          <div style="font-size:.88em;color:var(--t2);margin-bottom:12px;line-height:1.6">
-            目前主布：<b>${escapeHtml(oldRd)}</b>${oldLabel?` (${escapeHtml(oldLabel)})`:''}<br>
-            輸入新的 RD 號（必須已在公檔內，沒有的話請先到 Excel 公檔上傳或 .fab 掃描補進去）
-          </div>
-          <label style="font-size:.85em;font-weight:600;display:block;margin-bottom:4px">新 RD#</label>
-          <input type="text" id="em-rd" class="ta" style="font-family:Consolas,monospace" placeholder="例：179941 或 RD#179941" autocomplete="off">
-          <div id="em-preview" style="margin-top:10px;min-height:80px"></div>
-          <label style="font-size:.85em;font-weight:600;display:block;margin:12px 0 4px">主布角色名（選填）</label>
-          <input type="text" id="em-label" class="ta" placeholder="例：主料、BACK BODY" value="${escapeHtml(oldLabel)}">
-        </div>
-        <div class="modal-acts">
-          <button class="btn s" id="em-cancel">取消</button>
-          <button class="btn gn" id="em-ok" disabled>✓ 改</button>
-        </div>
-      </div>
-    </div>
-  `;
-  let foundFab = null;
-  const rdInput = document.getElementById('em-rd');
-  const preview = document.getElementById('em-preview');
-  const okBtn = document.getElementById('em-ok');
-  const lookup = () => {
-    const raw = rdInput.value.trim();
-    foundFab = null;
-    okBtn.disabled = true;
-    if(!raw){ preview.innerHTML = ''; return; }
-    const rd = normalizeRD(raw);
-    if(!rd.startsWith('RD#')){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">⚠ 格式不對 (應為 RD#數字 或純數字)</div>`; return; }
-    const f = Store.get('fabric:'+rd);
-    if(!f){ preview.innerHTML = `<div style="color:var(--rd);font-size:.85em">❌ 公檔找不到 <b>${escapeHtml(displayRd(rd))}</b>，先到 Settings → 資料管理 補進公檔再來。</div>`; return; }
-    foundFab = f;
-    okBtn.disabled = false;
-    const src = (f.source||'').startsWith('lib:') ? '🟢 Gap Inc Excel' : (f.source||'').startsWith('scan:') ? '⚪ 公檔新布' : (f.source||'').startsWith('bom:') ? '🟢 客人 BOM' : '';
-    preview.innerHTML = `
-      <div style="border-left:3px solid var(--gn);padding:9px 12px;background:rgba(46,125,50,.05);border-radius:5px;font-size:.85em">
-        ✓ 找到 <b>${escapeHtml(displayRd(f.rd))}</b> ${brandChips(f.originBrand)} ${src}<br>
-        <b>${escapeHtml(f.sub||'(未填)')}</b> · ${escapeHtml(f.composition||'—')}<br>
-        <span style="color:var(--t2)">${escapeHtml(f.weight||'—')} · ${escapeHtml(f.width||'—')} · ${escapeHtml(f.supplier||'—')}</span>
-      </div>
-    `;
+  const initSet = !!s.isSet || !!s.mainFabric2;
+  // 一個 slot 的 HTML（prefix = 'm' 或 'm2'）
+  const slotHtml = (prefix, title, fab, hidden) => {
+    const f = fab || {};
+    const spec = f.originalSpec || {};
+    const hasSpec = (f.originalRd || spec.sub || spec.composition || spec.weight);
+    return [
+      '<fieldset id="em-slot-'+prefix+'" style="border:1px solid var(--bd);border-radius:6px;padding:10px 14px 12px;margin-bottom:10px;'+(hidden?'display:none;':'')+'">',
+      '<legend style="font-size:.85em;font-weight:700;color:var(--ac);padding:0 6px">'+title+'</legend>',
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.85em">',
+      '<div><label style="font-weight:600;display:block;margin-bottom:2px">RD#</label>',
+      '<input id="em-'+prefix+'-rd" type="text" class="ta" style="font-family:Consolas,monospace" value="'+escapeHtml(displayRd(f.rd||''))+'" placeholder="例 179941"></div>',
+      '<div><label style="font-weight:600;display:block;margin-bottom:2px">角色名（選填）</label>',
+      '<input id="em-'+prefix+'-label" type="text" class="ta" value="'+escapeHtml(f.label||'')+'" placeholder="例 主料、BACK BODY"></div>',
+      '</div>',
+      '<div id="em-'+prefix+'-preview" style="margin-top:6px;font-size:.82em;min-height:20px"></div>',
+      '<details style="margin-top:8px" '+(hasSpec?'open':'')+'>',
+      '<summary style="cursor:pointer;font-size:.85em;color:var(--ac);font-weight:600">📌 客人原指定 RD + 規格（代用時填、公檔沒這 RD 時 comment 會用這些）</summary>',
+      '<div style="padding:8px 0 4px;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.85em">',
+      '<div style="grid-column:span 2"><label style="font-weight:600;display:block;margin-bottom:2px">客人原 RD（沒就空著）</label>',
+      '<input id="em-'+prefix+'-orig-rd" type="text" class="ta" style="font-family:Consolas,monospace" value="'+escapeHtml(displayRd(f.originalRd||''))+'" placeholder="例 RD1032855"></div>',
+      '<div><label style="font-weight:600;display:block;margin-bottom:2px">布種</label>',
+      '<input id="em-'+prefix+'-spec-sub" type="text" class="ta" value="'+escapeHtml(spec.sub||'')+'" placeholder="例 Interlock"></div>',
+      '<div><label style="font-weight:600;display:block;margin-bottom:2px">成分</label>',
+      '<input id="em-'+prefix+'-spec-comp" type="text" class="ta" value="'+escapeHtml(spec.composition||'')+'" placeholder="例 56% Rayon 39% Poly"></div>',
+      '<div><label style="font-weight:600;display:block;margin-bottom:2px">克重</label>',
+      '<input id="em-'+prefix+'-spec-wt" type="text" class="ta" value="'+escapeHtml(spec.weight||'')+'" placeholder="例 230 g/m²"></div>',
+      '<div><label style="font-weight:600;display:block;margin-bottom:2px">寬幅</label>',
+      '<input id="em-'+prefix+'-spec-wd" type="text" class="ta" value="'+escapeHtml(spec.width||'')+'" placeholder="例 64"></div>',
+      '</div></details>',
+      '</fieldset>'
+    ].join('');
   };
-  rdInput.oninput = lookup;
-  rdInput.onkeydown = e => { if(e.key === 'Enter') lookup(); };
-  setTimeout(() => rdInput.focus(), 50);
-  const close = () => { root.innerHTML = ''; };
-  document.getElementById('em-cancel').onclick = close;
-  document.getElementById('em-bg').onclick = e => { if(e.target.id === 'em-bg') close(); };
-  okBtn.onclick = () => {
-    if(!foundFab) return;
-    const newLabel = document.getElementById('em-label').value.trim();
-    s.mainFabric = { rd: foundFab.rd, label: newLabel };
+  const root = document.getElementById('modal-root');
+  root.innerHTML = [
+    '<div class="modal-bg" id="em-bg">',
+    '<div class="modal" style="max-width:700px;max-height:88vh;display:flex;flex-direction:column">',
+    '<h3>✏️ 改主布 — '+escapeHtml(styleKey)+'</h3>',
+    '<div class="body-x" style="overflow-y:auto;flex:1">',
+    '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px;padding:6px 10px;background:#f0f7ff;border-radius:5px;font-size:.9em">',
+    '<input type="checkbox" id="em-isset" '+(initSet?'checked':'')+'> <b>這是 SET 款</b>（會多出主布2 / SET 下身 一格）',
+    '</label>',
+    slotHtml('m', '⭐ 主布 (一般 / SET 上身)', s.mainFabric, false),
+    slotHtml('m2', '⭐ 主布2 (SET 下身)', s.mainFabric2, !initSet),
+    '</div>',
+    '<div class="modal-acts">',
+    '<button class="btn s" id="em-cancel">取消</button>',
+    '<button class="btn gn" id="em-ok">✓ 儲存</button>',
+    '</div></div></div>'
+  ].join('');
+  let foundFabs = { m: null, m2: null };
+  const setupSlot = (prefix) => {
+    const rdInput = document.getElementById('em-'+prefix+'-rd');
+    const preview = document.getElementById('em-'+prefix+'-preview');
+    const lookup = () => {
+      const raw = rdInput.value.trim();
+      foundFabs[prefix] = null;
+      if(!raw){ preview.innerHTML = '<span style="color:var(--t3)">(空 = 沒這格)</span>'; return; }
+      const rd = normalizeRD(raw);
+      if(!rd.startsWith('RD#')){ preview.innerHTML = '<span style="color:var(--rd)">⚠ 格式不對</span>'; return; }
+      const f = Store.get('fabric:'+rd);
+      if(!f){ preview.innerHTML = '<span style="color:var(--rd)">❌ 公檔找不到 '+escapeHtml(displayRd(rd))+'</span>'; return; }
+      foundFabs[prefix] = f;
+      preview.innerHTML = '<span style="color:var(--gn)">✓ '+escapeHtml(displayRd(f.rd))+' · '+escapeHtml(f.sub||'—')+' · '+escapeHtml((f.composition||'—').slice(0,50))+' · '+escapeHtml(f.weight||'—')+'</span>';
+    };
+    rdInput.oninput = lookup;
+    lookup();
+  };
+  setupSlot('m');
+  setupSlot('m2');
+  const setCb = document.getElementById('em-isset');
+  const slot2 = document.getElementById('em-slot-m2');
+  setCb.onchange = () => { slot2.style.display = setCb.checked ? '' : 'none'; };
+  document.getElementById('em-cancel').onclick = () => root.innerHTML = '';
+  document.getElementById('em-ok').onclick = () => {
+    if(!foundFabs.m){ toast('主布 RD 必須填、且在公檔內','or'); return; }
+    const isSet = setCb.checked;
+    if(isSet && !foundFabs.m2 && document.getElementById('em-m2-rd').value.trim()){
+      toast('主布2 RD 在公檔找不到、修正或清空','or'); return;
+    }
+    const buildSlot = (prefix, fab) => {
+      if(!fab) return null;
+      const label = document.getElementById('em-'+prefix+'-label').value.trim();
+      const origRdRaw = document.getElementById('em-'+prefix+'-orig-rd').value.trim();
+      const origRd = origRdRaw ? normalizeRD(origRdRaw) : '';
+      const specSub = document.getElementById('em-'+prefix+'-spec-sub').value.trim();
+      const specComp = document.getElementById('em-'+prefix+'-spec-comp').value.trim();
+      const specWt = document.getElementById('em-'+prefix+'-spec-wt').value.trim();
+      const specWd = document.getElementById('em-'+prefix+'-spec-wd').value.trim();
+      const slot = { rd: fab.rd, label };
+      if(origRd) slot.originalRd = origRd;
+      if(specSub || specComp || specWt || specWd){
+        slot.originalSpec = { sub:specSub, composition:specComp, weight:specWt, width:specWd };
+      }
+      return slot;
+    };
+    const oldRd = s.mainFabric ? s.mainFabric.rd : '';
+    const oldM2Rd = s.mainFabric2 ? s.mainFabric2.rd : '';
+    s.mainFabric = buildSlot('m', foundFabs.m);
+    s.mainFabric2 = isSet ? buildSlot('m2', foundFabs.m2) : null;
+    s.isSet = isSet;
     s.setBy = State.user.name;
     s.setDate = new Date().toLocaleDateString('zh-TW');
     Store.set('style:'+styleKey, s);
     addHistory({
       action:'style_main_changed',
       style: styleKey,
-      rd: foundFab.rd,
+      rd: foundFabs.m.rd,
       original: oldRd,
-      label: newLabel,
+      m2_rd: s.mainFabric2 ? s.mainFabric2.rd : '',
+      m2_original: oldM2Rd,
+      isSet,
       actor: State.user.name
     });
-    toast(`已改主布 ${oldRd} → ${foundFab.rd}`,'gn');
-    close();
-    // 重新拉款資料、refresh 詳情頁
+    toast('已改主布'+(isSet?' + 主布2':''),'gn');
+    root.innerHTML = '';
     State.search.result = { kind:'style', style:s, key:styleKey };
     render();
   };
@@ -4164,32 +4296,43 @@ function openAdoptAsSubstitute(candRd){
   const cand = Store.get('fabric:'+candRd);
   if(!cand){ toast('找不到這塊布','or'); return; }
   const query = (State.search.result && State.search.result.query) || '';
+  // 從 query 解析 spec、待會存進 originalSpec
+  const parsedFromQuery = parseMainCell(query)[0] || {};
   // 從 query 試抓 RD 預填客人原始 RD
   const rdMatch = query.match(/RD#?\s*(\d{3,})/i);
   const prefillOrig = rdMatch ? 'RD' + rdMatch[1] : '';
   const root = document.getElementById('modal-root');
   root.innerHTML = `
     <div class="modal-bg" id="ad-bg">
-      <div class="modal" style="max-width:580px">
+      <div class="modal" style="max-width:600px">
         <h3>💾 採用 ${escapeHtml(displayRd(candRd))} 為代用</h3>
         <div class="body-x">
           <div style="font-size:.85em;color:var(--t2);margin-bottom:14px;line-height:1.5;background:var(--cd);padding:8px 12px;border-radius:5px">
             <b>你查的條件：</b><br>${escapeHtml(query)}
+            <div style="font-size:.78em;color:var(--t3);margin-top:5px">解析到 → 布種: ${escapeHtml(parsedFromQuery.sub||'—')} · 成分: ${escapeHtml(parsedFromQuery.composition||'—')} · 重量: ${escapeHtml(parsedFromQuery.weight||'—')}</div>
           </div>
           <label style="font-size:.85em;font-weight:600;display:block;margin-bottom:4px">要採用到哪個款號 <span style="color:var(--rd)">*</span></label>
           <input type="text" id="ad-style" class="ta" placeholder="例：D104877 或 D104877_876050" autocomplete="off">
           <div id="ad-check" style="font-size:.82em;margin-top:5px;min-height:20px"></div>
+          <div id="ad-set-wrap" style="display:none;margin-top:6px;padding:6px 10px;background:#f0f7ff;border-radius:4px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.85em">
+              <input type="checkbox" id="ad-isset"> 這是 SET 款（上下身分開、會有主布 + 主布2）
+            </label>
+          </div>
           <label style="font-size:.85em;font-weight:600;display:block;margin:14px 0 4px">客人指定的原始 RD（沒就空著、不會驗證公檔）</label>
           <input type="text" id="ad-orig" class="ta" style="font-family:Consolas,monospace" placeholder="例：1064466" value="${escapeHtml(prefillOrig)}">
           <label style="font-size:.85em;font-weight:600;display:block;margin:14px 0 6px">採用為</label>
-          <div style="display:flex;gap:18px;align-items:center">
+          <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
               <input type="radio" name="ad-role" value="main" checked> ⭐ 主布
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer" id="ad-main2-lbl">
+              <input type="radio" name="ad-role" value="main2"> ⭐ 主布2 <span style="font-size:.75em;color:var(--t3)">(SET 下身)</span>
             </label>
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer" id="ad-acc-lbl">
               <input type="radio" name="ad-role" value="acc"> 🎨 配布
             </label>
-            <span id="ad-acc-hint" style="font-size:.78em;color:var(--t3)"></span>
+            <span id="ad-acc-hint" style="font-size:.78em;color:var(--t3);flex-basis:100%"></span>
           </div>
         </div>
         <div class="modal-acts">
@@ -4203,16 +4346,27 @@ function openAdoptAsSubstitute(candRd){
   const check = document.getElementById('ad-check');
   const okBtn = document.getElementById('ad-ok');
   const accRadio = document.querySelector('input[name="ad-role"][value="acc"]');
+  const main2Radio = document.querySelector('input[name="ad-role"][value="main2"]');
+  const mainRadio = document.querySelector('input[name="ad-role"][value="main"]');
   const accLbl = document.getElementById('ad-acc-lbl');
+  const main2Lbl = document.getElementById('ad-main2-lbl');
   const accHint = document.getElementById('ad-acc-hint');
+  const setWrap = document.getElementById('ad-set-wrap');
+  const isSetCb = document.getElementById('ad-isset');
   let existingStyle = null;
+  const setDisabled = (lbl, radio, disabled) => {
+    radio.disabled = disabled;
+    lbl.style.opacity = disabled ? '0.45' : '1';
+    if(disabled && radio.checked) mainRadio.checked = true;
+  };
   const updateCheck = () => {
     const key = styleInp.value.trim();
     existingStyle = null;
     if(!key){
       check.innerHTML = '';
-      accRadio.disabled = true;
-      accLbl.style.opacity = '0.5';
+      setDisabled(accLbl, accRadio, true);
+      setDisabled(main2Lbl, main2Radio, true);
+      setWrap.style.display = 'none';
       accHint.textContent = '';
       okBtn.disabled = true;
       return;
@@ -4220,53 +4374,93 @@ function openAdoptAsSubstitute(candRd){
     existingStyle = Store.get('style:'+key);
     if(existingStyle){
       const mainRd = existingStyle.mainFabric && existingStyle.mainFabric.rd ? displayRd(existingStyle.mainFabric.rd) : '(無主布)';
+      const main2Rd = existingStyle.mainFabric2 && existingStyle.mainFabric2.rd ? displayRd(existingStyle.mainFabric2.rd) : '';
       const accCount = (existingStyle.accessories||[]).length;
-      check.innerHTML = `<span style="color:var(--gn)">✓ 找到這款 — 主布 <b>${escapeHtml(mainRd)}</b> · ${accCount} 個配布</span>`;
-      accRadio.disabled = false;
-      accLbl.style.opacity = '1';
-      accHint.textContent = '';
+      const isSet = !!existingStyle.isSet || !!existingStyle.mainFabric2;
+      check.innerHTML = `<span style="color:var(--gn)">✓ 找到這款 — 主布 <b>${escapeHtml(mainRd)}</b>${main2Rd?' · 主布2 <b>'+escapeHtml(main2Rd)+'</b>':''} · ${accCount} 個配布${isSet?' · <span style="color:var(--ac)">SET</span>':''}</span>`;
+      setDisabled(accLbl, accRadio, false);
+      setDisabled(main2Lbl, main2Radio, !isSet);
+      setWrap.style.display = 'none';
+      accHint.textContent = isSet ? '' : '主布2 灰掉：這款還沒標 SET、要的話勾下面 checkbox（要先建為新款）';
     } else {
       check.innerHTML = `<span style="color:var(--or)">⚠ 還沒這款、選「主布」會建立新款</span>`;
-      accRadio.disabled = true;
-      accLbl.style.opacity = '0.5';
-      accHint.textContent = '(找不到這款)';
-      if(accRadio.checked) document.querySelector('input[name="ad-role"][value="main"]').checked = true;
+      setDisabled(accLbl, accRadio, true);
+      setWrap.style.display = 'block';
+      // 新款時、主布2 可選但要先勾 SET
+      setDisabled(main2Lbl, main2Radio, !isSetCb.checked);
+      accHint.textContent = '(找不到這款、無法加配布)';
     }
     okBtn.disabled = false;
   };
   styleInp.oninput = updateCheck;
+  isSetCb.onchange = () => {
+    if(!existingStyle){
+      setDisabled(main2Lbl, main2Radio, !isSetCb.checked);
+    }
+  };
   setTimeout(() => styleInp.focus(), 50);
   document.getElementById('ad-cancel').onclick = () => root.innerHTML = '';
-  document.getElementById('ad-bg').onclick = e => { if(e.target.id === 'ad-bg') root.innerHTML = ''; };
   okBtn.onclick = () => {
     const styleKey = styleInp.value.trim();
     if(!styleKey){ toast('款號是必填','or'); return; }
     const origRdRaw = origInp.value.trim();
     const origRd = origRdRaw ? normalizeRD(origRdRaw) : '';
     const role = document.querySelector('input[name="ad-role"]:checked').value;
-    if(role === 'main'){
-      const p = {
-        styleKey,
-        style: styleKey.split('_')[0],
-        bom: styleKey.includes('_') ? styleKey.split('_').slice(1).join('_') : '',
-        season: '', category: ''
-      };
-      const mainFab = { rd: candRd, label: '', originalRd: origRd || undefined };
-      const accessories = existingStyle ? (existingStyle.accessories || []) : [];
-      saveStyleFromExcel(p, mainFab, accessories, origRd ? { kind:'substitute', originalRd:origRd } : {});
+    // 把 query 解析出來的 spec 存進 originalSpec、之後 comment 可用
+    const originalSpec = (origRd || parsedFromQuery.sub || parsedFromQuery.composition || parsedFromQuery.weight) ? {
+      sub: parsedFromQuery.sub || '',
+      composition: parsedFromQuery.composition || '',
+      weight: parsedFromQuery.weight || '',
+      width: parsedFromQuery.width || ''
+    } : null;
+    const wantsSet = existingStyle ? (!!existingStyle.isSet || !!existingStyle.mainFabric2) : isSetCb.checked;
+    
+    if(role === 'main' || role === 'main2'){
+      // 建/更新款
+      let s = existingStyle;
+      if(!s){
+        s = {
+          style: styleKey.split('_')[0],
+          bom: styleKey.includes('_') ? styleKey.split('_').slice(1).join('_') : '',
+          brand: currentBrandKey(), season:'', category:'', description:'',
+          mainFabric: null, mainFabric2: null, isSet: wantsSet, accessories: [],
+          setBy: State.user.name, setDate: new Date().toLocaleDateString('zh-TW')
+        };
+      }
+      const fab = { rd: candRd, label:'', originalRd: origRd || undefined };
+      if(originalSpec) fab.originalSpec = originalSpec;
+      if(role === 'main') s.mainFabric = fab;
+      else { s.mainFabric2 = fab; s.isSet = true; }
+      s.setBy = State.user.name;
+      s.setDate = new Date().toLocaleDateString('zh-TW');
+      Store.set('style:'+styleKey, s);
+      addHistory({
+        action: origRd ? 'commit_substitute' : 'commit_main',
+        style: styleKey,
+        rd: candRd,
+        original: origRd || undefined,
+        slot: role,
+        source: 'search',
+        actor: State.user.name
+      });
     } else {
+      // 配布
       if(!existingStyle){ toast('找不到這款、無法加配布','or'); return; }
       existingStyle.accessories = existingStyle.accessories || [];
-      existingStyle.accessories.push({
-        rd: candRd, label:'配布',
-        originalRd: origRd || undefined
-      });
+      const acc = { rd: candRd, label:'配布', originalRd: origRd || undefined };
+      if(originalSpec) acc.originalSpec = originalSpec;
+      existingStyle.accessories.push(acc);
       Store.set('style:'+styleKey, existingStyle);
-      if(origRd){
-        addHistory({ action:'commit_substitute', style:styleKey, rd:candRd, original:origRd, source:'search', actor:State.user.name });
-      } else {
-        addHistory({ action:'add_accessory', style:styleKey, rd:candRd, label:'配布', source:'search', actor:State.user.name });
-      }
+      addHistory({
+        action: origRd ? 'commit_substitute' : 'add_accessory',
+        style: styleKey,
+        rd: candRd,
+        original: origRd || undefined,
+        slot: 'acc',
+        label: '配布',
+        source: 'search',
+        actor: State.user.name
+      });
     }
     root.innerHTML = '';
     copyCommentForStyle(styleKey, true);
@@ -4279,19 +4473,15 @@ function openAdoptAsSubstitute(candRd){
 function setAsMainOrAcc(rd, mode){
   const styleKey = prompt(`要把 ${rd} 設為「${mode==='main'?'主布':'配布'}」到哪個款？輸入完整 key (例如 D102978_BOM871681)：`);
   if(!styleKey) return;
-  const s = Store.get('style:'+styleKey);
+  let s = Store.get('style:'+styleKey);
   if(!s){
-    if(confirm(`找不到款 ${styleKey}，要建立新的嗎？`)){
-      const newStyle = {
-        style: styleKey.split('_')[0], bom: styleKey.split('_')[1] || '',
-        brand: currentBrandKey(), season:'', category:'', description:'',
-        mainFabric: null, accessories: [],
-        setBy: State.user.name, setDate: new Date().toLocaleDateString('zh-TW')
-      };
-      Store.set('style:'+styleKey, newStyle);
-      return setAsMainOrAcc(rd, mode);
-    }
-    return;
+    if(!confirm(`找不到款 ${styleKey}，要建立新的嗎？`)) return;
+    s = {
+      style: styleKey.split('_')[0], bom: styleKey.split('_').slice(1).join('_') || '',
+      brand: currentBrandKey(), season:'', category:'', description:'',
+      mainFabric: null, mainFabric2: null, isSet: false, accessories: [],
+      setBy: State.user.name, setDate: new Date().toLocaleDateString('zh-TW')
+    };
   }
   if(mode === 'main'){
     s.mainFabric = { rd, label:'' };
@@ -4324,6 +4514,50 @@ function addAccessory(styleKey){
   toast('配布已新增','gn');
   State.search.result = { kind:'style', style:s, key:styleKey };
   render();
+}
+
+// 統計一塊 RD 在所有款的使用次數
+//   asMain   = 當主布的次數
+//   asMain2  = 當主布2 (SET 下身) 的次數
+//   asAcc    = 當配布的次數
+//   asOriginal = 當客人原指定 RD 但被代用的次數
+//   styles   = [{ key, role }] 詳細列表
+function countRdUsage(rd){
+  const stats = { asMain:0, asMain2:0, asAcc:0, asOriginal:0, styles:[] };
+  if(!rd) return stats;
+  const keys = Store.list('style:');
+  for(const k of keys){
+    const key = k.startsWith('style:') ? k.slice(6) : k;
+    const s = Store.get('style:'+key);
+    if(!s) continue;
+    if(s.mainFabric && s.mainFabric.rd === rd){
+      stats.asMain++;
+      stats.styles.push({ key, role:'主布', sub:false });
+    }
+    if(s.mainFabric2 && s.mainFabric2.rd === rd){
+      stats.asMain2++;
+      stats.styles.push({ key, role:'主布2 (SET 下身)', sub:false });
+    }
+    if(s.mainFabric && s.mainFabric.originalRd === rd){
+      stats.asOriginal++;
+      stats.styles.push({ key, role:'客人原指定 → 代用 '+displayRd(s.mainFabric.rd), sub:true, actualRd:s.mainFabric.rd });
+    }
+    if(s.mainFabric2 && s.mainFabric2.originalRd === rd){
+      stats.asOriginal++;
+      stats.styles.push({ key, role:'客人原指定 → 代用 '+displayRd(s.mainFabric2.rd)+' (主布2)', sub:true, actualRd:s.mainFabric2.rd });
+    }
+    for(const a of (s.accessories || [])){
+      if(a.rd === rd){
+        stats.asAcc++;
+        stats.styles.push({ key, role:'配布'+(a.label?'·'+a.label:''), sub:false });
+      }
+      if(a.originalRd === rd){
+        stats.asOriginal++;
+        stats.styles.push({ key, role:'客人原指定 → 代用 '+displayRd(a.rd)+' (配布)', sub:true, actualRd:a.rd });
+      }
+    }
+  }
+  return stats;
 }
 
 function addHistory(entry){
