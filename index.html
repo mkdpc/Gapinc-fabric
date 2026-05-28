@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.38',
+  VERSION: '5.0.39',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -2336,38 +2336,17 @@ function renderNotifyForm(q){
 
 function renderNotFound(q){
   // 試抓 RD：如果 query 是 RD#NNNN 或純數字、掃 Store 看有沒有用過代用
-  let usageBlock = '';
   const rdMatch = q.match(/^RD#?\s*(\d{3,})$/i);
   if(rdMatch){
     const targetRd = 'RD#' + rdMatch[1];
     const usage = countRdUsage(targetRd);
     const subUses = usage.styles.filter(x => x.sub);
     if(subUses.length > 0){
-      usageBlock = `
-        <div style="margin-top:18px;padding:14px 16px;background:#fff8e6;border:1px solid #f0c674;border-radius:8px">
-          <div style="font-weight:700;color:#a06f00;margin-bottom:8px;font-size:.95em">
-            🔁 這個 RD 之前被當「客人原指定」、有 ${subUses.length} 筆代用記錄
-          </div>
-          ${subUses.map(u => {
-            const s = Store.get('style:'+u.key);
-            const ts = s && s.setDate ? s.setDate : '';
-            const setBy = s && s.setBy ? s.setBy : '';
-            return `<div style="padding:6px 0;border-top:1px dashed #e0c685;display:flex;justify-content:space-between;align-items:center;gap:10px">
-              <div style="flex:1">
-                <b style="color:var(--ac)">${escapeHtml(u.key)}</b> · ${escapeHtml(u.role)}
-                <div style="font-size:.82em;color:var(--t3);margin-top:2px">${escapeHtml(setBy)}${ts?' · '+escapeHtml(ts):''}</div>
-              </div>
-              <button class="btn s sm" data-view-style="${escapeHtml(u.key)}">→ 看款</button>
-              ${u.actualRd ? `<button class="btn s sm" data-copy-comment="${escapeHtml(u.key)}" title="複製此款的 comment">📋 comment</button>` : ''}
-            </div>`;
-          }).join('')}
-          <div style="margin-top:10px;font-size:.82em;color:#a06f00">
-            👉 之前有人在做這幾款時、也用過代用、可以參考。
-          </div>
-        </div>
-      `;
+      // 有歷史代用 → 用另一個 layout
+      return renderRdNotInLibButUsed(targetRd, subUses);
     }
   }
+  // 真的沒看過 → 原來的找不到頁
   return `
     <div class="q-display-bar">
       <span class="lab">${q.startsWith('RD')?'RD':'查詢'}:</span><span class="val">${escapeHtml(q)}</span>
@@ -2378,7 +2357,6 @@ function renderNotFound(q){
         <div class="ico">🔍</div>
         <h3>找不到 ${escapeHtml(q)}</h3>
         <div class="why">系統的公檔（Knit / Woven / Denim）裡都沒這塊布。可能是新布還沒登記、也可能 RD 打錯。</div>
-        ${usageBlock}
         ${renderNotifyForm(q)}
       </div>
       <div class="tips-card">
@@ -2389,6 +2367,89 @@ function renderNotFound(q){
           <li><b>RD 前綴差異</b>——有些寫 "RD1234"，有些寫 "1234"</li>
           <li><b>檔案還沒上傳</b>——對應品牌負責人還沒匯入這季的 Excel</li>
         </ul>
+      </div>
+    </div>
+  `;
+}
+
+// RD 不在公檔、但之前被當「客人原指定」用過代用 — 提供類似 RD 詳情頁的操作
+function renderRdNotInLibButUsed(rd, subUses){
+  const adm = isAdmin();
+  // 從歷史 commit 抓一份 spec 出來給使用者參考（取第一筆有 originalSpec 的）
+  let inheritedSpec = null;
+  let inheritedActualRd = null;
+  for(const u of subUses){
+    const s = Store.get('style:'+u.key);
+    if(!s) continue;
+    const slots = [s.mainFabric, s.mainFabric2, ...(s.accessories||[])].filter(Boolean);
+    for(const slot of slots){
+      if(slot.originalRd === rd && slot.originalSpec){
+        inheritedSpec = slot.originalSpec;
+        inheritedActualRd = slot.rd;
+        break;
+      }
+    }
+    if(inheritedSpec) break;
+  }
+  return `
+    <div class="q-display-bar">
+      <span class="lab">RD:</span><span class="val">${escapeHtml(displayRd(rd))}</span>
+      <span class="sbadge" style="margin-left:6px;background:#fff5d9;color:#a06f00;border:1px solid #f0c674">⚠ 公檔還沒登記</span>
+      <button class="clr" data-clear="1">✕ 清除</button>
+    </div>
+    <div class="rd-detail-grid">
+      <div class="rd-detail-card">
+        <div class="head">
+          <h3>${escapeHtml(displayRd(rd))}</h3>
+          <span class="sbadge" style="background:#fff5d9;color:#a06f00;border:1px solid #f0c674">客人原指定 RD</span>
+        </div>
+        <div style="font-size:.88em;color:var(--t2);margin:8px 0 14px;line-height:1.6">
+          這個 RD 公檔沒有、但<b>之前被當客人原指定、有人做過代用</b>。
+          ${inheritedSpec ? '下面是繼承自歷史記錄的規格、可以當參考。' : ''}
+        </div>
+        ${inheritedSpec ? `
+          <div class="prop-grid" style="background:#f9fafb;padding:11px 13px;border-radius:6px;font-size:.88em">
+            <div class="k">布種</div><div>${escapeHtml(inheritedSpec.sub||'—')}</div>
+            <div class="k">成分</div><div>${escapeHtml(inheritedSpec.composition||'—')}</div>
+            <div class="k">克重</div><div>${escapeHtml(inheritedSpec.weight||'—')}</div>
+            <div class="k">寬幅</div><div>${escapeHtml(inheritedSpec.width||'—')}</div>
+          </div>
+          <div style="font-size:.78em;color:var(--t3);margin-top:6px">↑ 來自歷史代用記錄${inheritedActualRd?'（採用 '+escapeHtml(displayRd(inheritedActualRd))+'）':''}</div>
+        ` : ''}
+      </div>
+      <div>
+        <div class="used-in-card">
+          <h4>🔁 代用記錄（${subUses.length} 筆）</h4>
+          ${subUses.map(u => {
+            const s = Store.get('style:'+u.key);
+            const ts = s && s.setDate ? s.setDate : '';
+            const setBy = s && s.setBy ? s.setBy : '';
+            return `<div style="padding:8px 0;border-bottom:1px dashed var(--bd2);display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <div style="flex:1;font-size:.88em">
+                <b style="color:var(--ac)">${escapeHtml(u.key)}</b><br>
+                <span style="color:var(--t2)">${escapeHtml(u.role)}</span>
+                <div style="font-size:.78em;color:var(--t3);margin-top:2px">${escapeHtml(setBy)}${ts?' · '+escapeHtml(ts):''}</div>
+              </div>
+              <button class="btn s sm" data-view-style="${escapeHtml(u.key)}">→ 看款</button>
+              ${u.actualRd ? `<button class="btn s sm" data-copy-comment="${escapeHtml(u.key)}" title="複製此款的 comment">📋</button>` : ''}
+            </div>`;
+          }).join('')}
+        </div>
+        ${adm ? `<div class="admin-panel">
+          <h4>⭐ 管理員操作</h4>
+          <div style="font-size:.82em;color:var(--t2);margin-bottom:8px;line-height:1.5">
+            把這個 RD 設為某款的主布 / 配布。<br>
+            <span style="color:var(--or)">⚠ 因為公檔還沒這 RD、款的顯示會標「公檔缺」、之後再到 Settings 上傳 .fab 補進去</span>
+          </div>
+          <div class="acts">
+            <button class="btn" data-set-main="${escapeHtml(rd)}">⭐ 設為主布</button>
+            <button class="btn s" style="border-color:#94a3b8" data-set-acc="${escapeHtml(rd)}">➕ 設為配布</button>
+          </div>
+        </div>` : ''}
+        <details style="margin-top:14px">
+          <summary style="cursor:pointer;color:var(--t2);font-size:.85em">📩 通知品牌負責人新增公檔</summary>
+          <div style="margin-top:8px">${renderNotifyForm(rd)}</div>
+        </details>
       </div>
     </div>
   `;
