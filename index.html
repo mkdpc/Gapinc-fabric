@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.39',
+  VERSION: '5.0.40',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1265,7 +1265,9 @@ const LIB_COLUMN_HINTS = {
   notes:       [/^notes?$/i, /^remark/i, /^comment/i, /^備註/, /^memo/i, /^note$/i, /^description.*remark/i],
   brand:       [/^originating\s*brands?/i, /^brand/i, /^customer/i, /^client/i, /^品牌/, /^客戶/],
   chemFinish:  [/^chemical\s*finish\s*name/i, /^chemical\s*finish$/i, /^chemical/i],
-  mechFinish:  [/^mechanical\s*finish/i, /^mechanical/i]
+  mechFinish:  [/^mechanical\s*finish/i, /^mechanical/i],
+  name:        [/^material\s*name/i, /^fabric\s*name/i],
+  brief:       [/^material\s*brief\s*description/i, /^brief\s*description/i]
 };
 
 function detectLibraryHeader(rows){
@@ -1402,6 +1404,7 @@ function parseLibraryExcel(file, fabricType){
             brand: null,  // 所有品牌共用，不指定 brand
             originBrand: get('brand'),  // 公檔 Originating Brands 欄、info only
             type: fabricType,
+            name: [get('name'), get('brief')].filter(Boolean).join(' · '),
             sub: get('sub'),
             composition: get('composition'),
             weight: normalizeWeight(get('weight')),
@@ -1825,7 +1828,7 @@ function performSearch(qRaw){
   let matches = Store.list('fabric:').map(k => Store.get('fabric:'+k))
     .filter(f => {
       if(!f) return false;
-      const haystack = [f.sub, f.composition, f.type, f.supplier, f.notes, f.rd]
+      const haystack = [f.name, f.sub, f.composition, f.type, f.supplier, f.chemFinish, f.mechFinish, f.notes, f.rd]
         .filter(Boolean).join(' ').toUpperCase();
       return tokens.every(t => haystack.includes(t));
     });
