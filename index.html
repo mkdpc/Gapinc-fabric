@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.42',
+  VERSION: '5.0.43',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1474,7 +1474,7 @@ function renderAppShell(){
   const styleCount = Store.list('style:').length;
   const stats = `<span class="stats">📚 ${fabricCount} 塊布 · ${styleCount} 款已採用</span>`;
   const tabs = isAdmin()
-    ? ['excel','search','pending','history','settings']
+    ? ['excel','search','pending','settings']
     : ['search'];  // 成員只看搜尋頁，沒 tab 切換
   // 如果 currentTab 不在允許清單裡（例如成員從前一階段帶著 'excel' 登入），導回第一個合法 tab
   if(!tabs.includes(State.currentTab)) State.currentTab = tabs[0];
