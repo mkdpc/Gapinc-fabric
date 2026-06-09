@@ -367,7 +367,7 @@ textarea.ta:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-soft);bac
 // CONFIG
 // ============================================================
 const CONFIG = {
-  VERSION: '5.0.40',
+  VERSION: '5.0.41',
   // 在 Part 4 部署後，把 Apps Script Web App URL 貼到下面這行的 '' 中間
   APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbzkbgceu52JLAR8-CtZnBtOJkloQkGDOrOeQjWwZm-2iE6_9CyZWpxe_YH4zLcCIgGA/exec',
   STORAGE_PREFIX: 'gisfdt5:'
@@ -1325,6 +1325,11 @@ function normalizeWeight(s){
   if(!m) return t;
   // 若已含單位保留
   if(/g\s*\/\s*m|gsm/i.test(t)) return t.replace(/\s+/g,' ');
+  // oz 偵測：數值 ≤ 20 且無 g/m² 單位 → oz/yd² 換算成 gsm (×33.906)
+  const num = parseFloat(m[1]);
+  if(num <= 20 && !/g\/m|gsm/i.test(t)){
+    return Math.round(num * 33.906) + ' g/m²';
+  }
   return m[1] + ' g/m²';
 }
 
@@ -1670,6 +1675,15 @@ function renderSearchTab(){
     <div class="filter-row">
       <span class="filter-label">品牌</span>${brandChips}
       <span style="width:14px"></span>
+      <span class="filter-label">篩品牌</span>
+      <select class="sel-dd" id="brandF">
+        <option value="all">全部</option>
+        <option value="Gap">Gap</option>
+        <option value="Athleta">Athleta</option>
+        <option value="Old Navy">Old Navy</option>
+        <option value="Banana">Banana</option>
+      </select>
+      <span style="width:14px"></span>
       <span class="filter-label">季別</span>
       <select class="sel-dd" id="seasonF">
         <option value="all">全部</option><option value="SP 2027">SP 2027</option>
@@ -1785,6 +1799,7 @@ function attachSearchTab(){
   const clr = document.getElementById('clearsearch'); if(clr) clr.onclick = () => { State.search.query=''; State.search.result=null; render(); };
   const sf = document.getElementById('seasonF'); if(sf){ sf.value = State.search.season; sf.onchange = () => { State.search.season = sf.value; render(); }; }
   const tf = document.getElementById('typeF'); if(tf){ tf.value = State.search.type; tf.onchange = () => { State.search.type = tf.value; render(); }; }
+  const brf = document.getElementById('brandF'); if(brf){ brf.value = State.search.brandFilter||'all'; brf.onchange = () => { State.search.brandFilter = brf.value; render(); }; }
   attachResultHandlers();
 }
 
@@ -2239,6 +2254,16 @@ function renderRecommendEmpty(query, parsedFab, diag){
 }
 
 function renderRecommendResult(query, parsedFab, candidates, weightRelaxed, queryType){
+  // 套用 season / type / brand 篩選
+  const _ss = State.search.season || 'all';
+  const _ts = State.search.type || 'all';
+  const _bs = State.search.brandFilter || 'all';
+  if(_ss !== 'all') candidates = candidates.filter(c => (c.fab.season||'').includes(_ss));
+  if(_ts !== 'all') candidates = candidates.filter(c => (c.fab.type||'').toLowerCase() === _ts.toLowerCase());
+  if(_bs !== 'all') candidates = candidates.filter(c => {
+    const ob = (c.fab.originBrand||'').toUpperCase();
+    return ob.includes(_bs.toUpperCase());
+  });
   // 顯示解析結果 + 推薦清單
   const parsedSummary = [
     parsedFab.type && `type: ${parsedFab.type}`,
