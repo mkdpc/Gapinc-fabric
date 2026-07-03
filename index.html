@@ -5,38 +5,47 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>GIS FDT v5.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
-  --cd:#fff;--hd:#f5f7fa;--hd2:#eef2f8;
-  --ac:#002868;--ac-soft:rgba(0,40,104,.08);
-  --tx:#0e1828;--t2:#5a6478;--t3:#8b95a8;
-  --bd:#d8dce4;--bd2:#e7ebf2;
-  --gn:#2e7d52;--gn-soft:rgba(46,125,82,.12);
-  --bl:#1f4e8c;--bl-soft:rgba(31,78,140,.12);
-  --or:#c25c20;--or-soft:rgba(194,92,32,.12);
-  --rd:#b83232;--rd-soft:rgba(184,50,50,.1);
+  --cd:#fff;--hd:#f5f7fa;--hd2:#e8f0f9;
+  --ac:#1A3C5E;--ac-soft:rgba(26,60,94,.08);
+  --tx:#1a2536;--t2:#5A7A99;--t3:#93a1b5;
+  --bd:#dbe1ea;--bd2:#eaecef;
+  --gn:#2f9e6b;--gn-soft:rgba(47,158,107,.12);
+  --bl:#1976D2;--bl-soft:rgba(25,118,210,.12);
+  --or:#e0842d;--or-soft:rgba(224,132,45,.12);
+  --rd:#d32f2f;--rd-soft:rgba(211,47,47,.1);
   --b-gap:#002868;--b-ath:#7B5FA8;--b-on:#3B9BD8;--b-ba:#E0A800;--b-ba-tx:#3a2c00;
 }
-body{font-family:'Segoe UI','Microsoft JhengHei',sans-serif;background:#dfe5ef;color:var(--tx);min-height:100vh;font-size:16px}
+body{font-family:'Roboto','Microsoft JhengHei','Segoe UI',sans-serif;background:#eaeef4;color:var(--tx);min-height:100vh;font-size:16px}
 button{font-family:inherit;cursor:pointer}
 a{color:var(--ac)}
 
-.app{max-width:1480px;margin:24px auto;background:var(--cd);border-radius:11px;overflow:hidden;border:1px solid #c7cfdb;box-shadow:0 8px 32px rgba(14,24,40,.12)}
-.appbar{background:var(--cd);padding:12px 24px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+.app{max-width:1480px;margin:24px auto;background:var(--cd);border-radius:12px;overflow:hidden;border:1px solid #cdd6e2;box-shadow:0 10px 34px rgba(14,24,40,.14)}
+.appbar{background:var(--ac);padding:13px 24px;border-bottom:none;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
 .appbar .brand{display:flex;align-items:center;gap:14px}
-.appbar .logo{font-size:1.15em;font-weight:700;color:var(--tx)}
-.appbar .logo em{color:var(--ac);font-style:normal;font-size:.78em;margin-left:5px;font-weight:600;background:var(--ac-soft);padding:2px 8px;border-radius:5px}
-.appbar .right{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.appbar .stats{font-size:.82em;color:var(--t2)}
-.userchip{display:flex;align-items:center;gap:8px;padding:5px 11px;border-radius:9px;border:1px solid var(--bd);background:var(--cd);font-size:.85em;cursor:pointer}
-.userchip.adm{background:var(--ac-soft);border-color:rgba(0,40,104,.2);color:var(--ac)}
-.userchip b{font-weight:700}
+.appbar .logo{font-size:1.18em;font-weight:900;color:#fff;letter-spacing:.4px}
+.appbar .logo em{color:#fff;font-style:normal;font-size:.68em;margin-left:7px;font-weight:600;background:rgba(255,255,255,.18);padding:2px 8px;border-radius:5px;letter-spacing:.5px}
+.appbar .right{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.appbar .stats{font-size:.82em;color:rgba(255,255,255,.72)}
+.userchip{display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;font-size:.85em;cursor:pointer;transition:background .15s}
+.userchip:hover{background:rgba(255,255,255,.18)}
+.userchip.adm{background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.34);color:#fff}
+.userchip b{font-weight:700;color:#fff}
+.appbar .userchip b[style]{color:#fff!important}
 .synced{font-weight:600}
 .synced.ok{color:var(--gn)}
 .synced.warn{color:var(--or)}
 .synced.err{color:var(--rd)}
 .synced.local{color:var(--t2)}
+.appbar .synced.ok{color:#5cd39b}
+.appbar .synced.warn{color:#f2ab5f}
+.appbar .synced.err{color:#ff9090}
+.appbar .synced.local{color:rgba(255,255,255,.62)}
 
 .mtabs{background:var(--cd);border-bottom:2px solid var(--bd);padding:0 24px;display:flex;gap:0;overflow-x:auto}
 .mtab{padding:13px 26px;background:none;border:none;font-size:.95em;color:var(--t2);border-bottom:3px solid transparent;font-weight:500;margin-bottom:-2px;white-space:nowrap}
